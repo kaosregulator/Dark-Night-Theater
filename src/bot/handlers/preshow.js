@@ -7,7 +7,8 @@ import { canHost, canManage } from '../permissions.js';
 import { createActivityInvite, publishPanel } from './theater.js';
 import { COLORS } from './format.js';
 import { log } from '../../logger.js';
-import { renderBoxOffice, renderTicket, renderConcession, renderSeated, assignSeat, ticketNumber } from '../canvas/cards.js';
+import { assignSeat, ticketNumber } from '../canvas/cards.js';
+import { animCurtain, animTicket, animPopcorn, animSeated } from '../canvas/anim.js';
 
 // ============================================================================
 //  In-Discord gamified PRE-SHOW.
@@ -91,38 +92,37 @@ async function startPublicPreshow(interaction, uid) {
   const video = library.findVideo(uid);
   if (!video) return interaction.update({ content: 'That video is unavailable.', embeds: [], components: [], files: [] });
 
-  const buf = await renderBoxOffice(video, owner);
-  const file = new AttachmentBuilder(buf, { name: 'preshow.png' });
+  // Ack the (ephemeral) menu click first — GIF encoding takes ~1s.
+  await interaction.deferUpdate();
+  const buf = await animCurtain(video, owner);
+  const file = new AttachmentBuilder(buf, { name: 'preshow.gif' });
   const row = new ActionRowBuilder().addComponents(
     btn(`ps:ticket:${uid}:${owner.id}`, 'Get Ticket', ButtonStyle.Success, '🎟️')
   );
   const settings = getSettings(interaction.guildId);
   if (settings.privateViewingEnabled) row.addComponents(btn(`ps:private:${uid}:${owner.id}`, 'Watch Privately', ButtonStyle.Secondary, '🔒'));
 
-  let message;
   try {
-    message = await interaction.channel.send({
+    const message = await interaction.channel.send({
       content: `🎟️ **${owner.name}** stepped up to the Box Office…`,
-      embeds: [embedImg('preshow.png', '🎬 The show is about to begin — grab a ticket and some popcorn!')],
+      embeds: [embedImg('preshow.gif', '🎬 The show is about to begin — grab a ticket and some popcorn!')],
       files: [file],
       components: [row],
     });
     arm(message);
   } catch (err) {
     log.warn('preshow public post failed:', err.message);
-    return interaction.update({
+    return interaction.editReply({
       content: '⚠️ I couldn’t post the pre-show here (need **Send Messages / Embed Links / Attach Files**).',
       embeds: [],
       components: [],
-      files: [],
     });
   }
 
-  await interaction.update({
+  await interaction.editReply({
     content: '🎬 Lights up — your pre-show is playing in the channel below. Only **you** can run it. 🍿',
     embeds: [],
     components: [],
-    files: [],
   });
 }
 
@@ -132,20 +132,24 @@ async function advance(interaction, uid, ownerId, to) {
   const video = library.findVideo(uid);
   const seat = assignSeat(owner.id);
 
+  // Ack first — GIF encoding takes ~1s; the public message holds the prior step
+  // until we edit it below (no flicker, no 3s timeout).
+  await interaction.deferUpdate();
+
   let buf, description, next, contentLine;
   if (to === 'ticket') {
-    buf = await renderTicket(owner, video, { seat, ticketNo: ticketNumber(owner.id, uid) });
+    buf = await animTicket(owner, video, { seat, ticketNo: ticketNumber(owner.id, uid) });
     description = `🎟️ Ticket printed — seat **${seat}**. Off to the concession stand…`;
     contentLine = `🎟️ **${owner.name}** grabbed a ticket…`;
     next = btn(`ps:popcorn:${uid}:${ownerId}`, 'Grab Popcorn', ButtonStyle.Success, '🍿');
   } else if (to === 'popcorn') {
     const snack = SNACKS[Math.floor(Math.random() * SNACKS.length)];
-    buf = await renderConcession(owner, { snack });
+    buf = await animPopcorn(owner, { snack });
     description = `🍿 Scored **${snack}**! One more step — find your seat.`;
     contentLine = `🍿 **${owner.name}** hit the concession stand…`;
     next = btn(`ps:seat:${uid}:${ownerId}`, 'Take Your Seat', ButtonStyle.Success, '🪑');
   } else {
-    buf = await renderSeated(owner, video, { seat });
+    buf = await animSeated(owner, video, { seat });
     description = `🪑 Seated in **${seat}** — lights dimming. Press **Enter Theater**!`;
     contentLine = `🪑 **${owner.name}** is taking their seat…`;
     const settings = getSettings(interaction.guildId);
@@ -154,10 +158,10 @@ async function advance(interaction, uid, ownerId, to) {
       : btn(`ps:private:${uid}:${ownerId}`, 'Watch Privately', ButtonStyle.Secondary, '🔒');
   }
 
-  const file = new AttachmentBuilder(buf, { name: 'preshow.png' });
-  await interaction.update({
+  const file = new AttachmentBuilder(buf, { name: 'preshow.gif' });
+  await interaction.editReply({
     content: contentLine,
-    embeds: [embedImg('preshow.png', description)],
+    embeds: [embedImg('preshow.gif', description)],
     files: [file],
     components: [new ActionRowBuilder().addComponents(next)],
   });

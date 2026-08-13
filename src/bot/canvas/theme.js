@@ -99,6 +99,35 @@ export async function loadRemote(url) {
   }
 }
 
+// Draw a circular avatar from an already-loaded image (or a colored initials
+// disc if img is null). Sync — safe to call every animation frame.
+export function drawAvatar(ctx, img, user, cx, cy, radius) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.closePath();
+  ctx.clip();
+  if (img) {
+    ctx.drawImage(img, cx - radius, cy - radius, radius * 2, radius * 2);
+  } else {
+    const hues = ['#8ab4ff', '#ff9ec4', '#8affc4', '#c9a2ff', '#ffb38a', '#8affe0'];
+    const seed = [...(user?.id || 'x')].reduce((a, c) => a + c.charCodeAt(0), 0);
+    ctx.fillStyle = hues[seed % hues.length];
+    ctx.fillRect(cx - radius, cy - radius, radius * 2, radius * 2);
+    ctx.fillStyle = '#14101c';
+    ctx.font = font(radius, true);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText((user?.name || '?').slice(0, 2).toUpperCase(), cx, cy + 2);
+  }
+  ctx.restore();
+  ctx.strokeStyle = C.gold2;
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
 // Draw a circular avatar; if the image failed to load, draw a colored disc with
 // the user's initials so the card always looks complete.
 export async function avatarCircle(ctx, user, cx, cy, radius) {
