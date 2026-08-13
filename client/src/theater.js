@@ -76,6 +76,7 @@ export class TheaterUI {
         <section class="social" id="social"></section>
 
         <div class="lobby hidden" id="lobby"></div>
+        <div class="intro hidden" id="intro"></div>
         <div class="toasts" id="toasts"></div>
       </div>
     `;
@@ -298,6 +299,41 @@ export class TheaterUI {
         this.toggleLobby(false);
       };
     });
+    // Animated GIF "moving poster" on hover (Cloudflare animated thumbnail).
+    grid.querySelectorAll('.card').forEach((card) => {
+      const v = this.library.find((x) => x.uid === card.dataset.uid);
+      const thumb = card.querySelector('.thumb');
+      if (!v?.animatedThumbnail || !thumb) return;
+      card.addEventListener('mouseenter', () => (thumb.style.backgroundImage = `url('${v.animatedThumbnail}')`));
+      card.addEventListener('mouseleave', () => (thumb.style.backgroundImage = `url('${v.thumbnail || ''}')`));
+    });
+  }
+
+  // Cinematic "Now Showing" intro: curtains part over an animated poster + title
+  // card, then fades. Triggered for everyone at once on a clan movie (via the
+  // synced 'movie' room event) and locally when starting private viewing.
+  showIntro(video) {
+    if (!video) return;
+    const el = this.root.querySelector('#intro');
+    const poster = video.animatedThumbnail || video.thumbnail || '';
+    el.innerHTML = `
+      <div class="intro-curtain il"></div>
+      <div class="intro-curtain ir"></div>
+      <div class="intro-card">
+        ${poster ? `<div class="intro-poster" style="background-image:url('${poster}')"></div>` : ''}
+        <div class="intro-now">🎬 NOW SHOWING</div>
+        <div class="intro-title">${escapeHtml(video.name)}</div>
+        <div class="intro-sub">${escapeHtml(video.category || '')} · ${fmt(video.durationSeconds)}</div>
+      </div>`;
+    el.classList.remove('hidden');
+    // reflow so the animation restarts if replayed
+    void el.offsetWidth;
+    el.classList.add('play');
+    clearTimeout(this._introT);
+    this._introT = setTimeout(() => {
+      el.classList.remove('play');
+      el.classList.add('hidden');
+    }, 3800);
   }
 
   toggleLobby(force) {
@@ -312,8 +348,11 @@ export class TheaterUI {
     if (ev.type === 'join') this.toast(`👤 ${ev.user.name} entered the theater`);
     else if (ev.type === 'leave') this.toast(`👋 ${ev.user.name} left`);
     else if (ev.type === 'item') this.toast(`${itemEmoji(ev.item)} ${ev.user.name} got ${ev.item}!`);
-    else if (ev.type === 'movie') this.toast(`🎬 Now playing: ${ev.video.name}`);
-    else if (ev.type === 'ended') this.toast('🎬 The movie ended');
+    else if (ev.type === 'movie') {
+      const v = this.library.find((x) => x.uid === ev.video.uid) || ev.video;
+      this.showIntro(v);
+      this.toast(`🎬 Now playing: ${ev.video.name}`);
+    } else if (ev.type === 'ended') this.toast('🎬 The movie ended');
   }
 
   toast(text) {

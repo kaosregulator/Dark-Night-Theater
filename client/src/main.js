@@ -45,7 +45,9 @@ async function boot() {
   ui.on('pick-private', async ({ uid }) => {
     mode = 'private';
     const [pb, prog] = await Promise.all([api.playback(uid), api.progress(uid).catch(() => ({}))]);
-    ui.setMode('private', library.find((v) => v.uid === uid));
+    const video = library.find((v) => v.uid === uid);
+    ui.setMode('private', video);
+    ui.showIntro(video);
     player.playPrivate(pb, prog?.progress?.position || 0);
     schedulePrivateSave(uid, player);
   });

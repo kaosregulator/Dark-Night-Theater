@@ -75,5 +75,10 @@ function setupPage() {
     <li>Restart. Then in the Discord Developer Portal set your Activity URL mapping to this host.</li>
   </ol>
   <p>See <code>SETUP.md</code> in the repo for the full walkthrough.</p>
+  <hr style="border-color:#2a2a3a;margin:1.5rem 0">
+  <p style="font-size:.8rem;color:#9a97b5">⚖️ This bot owns and stores no video content. All media is streamed from the
+  operator's own Cloudflare Stream (or a connected third party). Whoever supplies content warrants it is
+  purchased/licensed and is solely liable for it. Illegal or unlicensed content is not supported. See
+  <code>DISCLAIMER.md</code>.</p>
   </div></body></html>`;
 }

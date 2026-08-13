@@ -45,6 +45,11 @@ export function normaliseVideo(v) {
     description: meta.description || '',
     durationSeconds: Math.round(v.duration || 0),
     thumbnail: v.thumbnail || '',
+    // Cloudflare Stream can serve a short animated GIF preview from the same
+    // base URL — used for the hover/intro "moving poster" effect in the UI.
+    animatedThumbnail: v.thumbnail
+      ? v.thumbnail.replace('/thumbnails/thumbnail.jpg', '/thumbnails/thumbnail.gif?duration=4s')
+      : '',
     // playback.hls / playback.dash are the canonical manifest URLs Cloudflare
     // returns. For public videos we can hand these straight to the player.
     hls: v.playback?.hls || '',

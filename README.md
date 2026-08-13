@@ -33,6 +33,26 @@ control" that the platform actually allows — and it genuinely lives in Discord
 
 ---
 
+## ⚖️ Content & liability disclaimer
+
+DarkNight Home Theater is a **player/controller only** — it **owns, hosts, and
+stores no video content**. Every movie or video is streamed **directly from the
+operator's own Cloudflare Stream account** (or another third‑party source they
+connect). The bot stores only non‑content data (settings, a cached list of
+titles/metadata, and personal resume positions) plus the live stream itself.
+
+Whoever supplies content — a server owner, admin, or user — **warrants they
+purchased and/or fully licensed it and hold all rights to stream it**, and is
+**solely liable** for it. **We do not support, host, or condone any pirated,
+illegal, or unlicensed content in any form.** Neither this software, its authors,
+the bot's operator, Discord, nor Cloudflare owns or is responsible for content an
+operator or user streams. Software provided **"AS IS", without warranty**.
+
+**Full terms: [DISCLAIMER.md](./DISCLAIMER.md).** By deploying or using this
+software you agree to it.
+
+---
+
 ## Features
 
 - **`/watch`** — search / browse the library (thumbnail, title, duration, category).
