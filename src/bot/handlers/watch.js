@@ -92,12 +92,14 @@ export async function handleWatchPick(interaction) {
 
   const settings = getSettings(interaction.guildId);
   const row = new ActionRowBuilder();
+  // Primary path is the gamified in-Discord pre-show (Box Office → ticket →
+  // popcorn → seat → enter). Private viewing skips straight to a personal stream.
   if (settings.clanMovieEnabled) {
     row.addComponents(
       new ButtonBuilder()
-        .setCustomId(`w:party:${uid}`)
-        .setLabel('Start Watch Party')
-        .setEmoji('🍿')
+        .setCustomId(`ps:box:${uid}`)
+        .setLabel('Box Office')
+        .setEmoji('🎟️')
         .setStyle(ButtonStyle.Success)
     );
   }
