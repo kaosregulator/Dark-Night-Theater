@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import path from 'node:path';
 
 // Centralised, validated configuration. Reads once at boot. Missing values are
 // reported (not fatal) so the web server can still start and show setup help —
@@ -19,20 +20,6 @@ function list(name) {
     .filter(Boolean);
 }
 
-// Decode a signing-key PEM that may be stored base64-encoded or with literal \n.
-function readSigningKey() {
-  let pem = str('CLOUDFLARE_STREAM_SIGNING_KEY_PEM');
-  if (!pem) return '';
-  if (str('CLOUDFLARE_STREAM_SIGNING_KEY_B64') === '1') {
-    try {
-      pem = Buffer.from(pem, 'base64').toString('utf8');
-    } catch {
-      /* fall through and use as-is */
-    }
-  }
-  return pem.replace(/\\n/g, '\n');
-}
-
 export const config = {
   discord: {
     botToken: str('DISCORD_BOT_TOKEN'),
@@ -40,23 +27,26 @@ export const config = {
     clientSecret: str('DISCORD_CLIENT_SECRET'),
     devGuildId: str('DISCORD_DEV_GUILD_ID'),
   },
-  cloudflare: {
-    accountId: str('CLOUDFLARE_ACCOUNT_ID'),
-    apiToken: str('CLOUDFLARE_STREAM_API_TOKEN'),
-    signingKeyId: str('CLOUDFLARE_STREAM_SIGNING_KEY_ID'),
-    signingKeyPem: readSigningKey(),
+  // Local-device movie host. Videos are served from disk with HTTP range
+  // support — no cloud storage, no transcoding service.
+  media: {
+    dir: path.resolve(process.cwd(), str('MEDIA_DIR', 'media')),
+    maxUploadMb: int('MAX_UPLOAD_MB', 8192),
+    tokenTtl: int('MEDIA_TOKEN_TTL', 86400), // playback URLs valid 24h by default
+    // Key that protects the /host upload page. Falls back to SESSION_SECRET.
+    get adminKey() {
+      return str('HOST_ADMIN_KEY') || config.app.sessionSecret;
+    },
   },
   app: {
     baseUrl: str('PUBLIC_BASE_URL').replace(/\/$/, ''),
     port: int('PORT', 3000),
     adminUserIds: list('ADMIN_USER_IDS'),
     sessionSecret: str('SESSION_SECRET', 'change-me'),
-    streamTokenTtl: int('STREAM_TOKEN_TTL_SECONDS', 21600),
   },
 };
 
-// Which subsystems are fully configured. Used for a clear boot report and to
-// avoid crashing when, say, Cloudflare isn't wired yet.
+// Which subsystems are ready. The media host needs no secrets, so it's always on.
 export const readiness = {
   get bot() {
     return Boolean(config.discord.botToken && config.discord.clientId);
@@ -64,11 +54,8 @@ export const readiness = {
   get activity() {
     return Boolean(config.discord.clientId && config.discord.clientSecret);
   },
-  get cloudflare() {
-    return Boolean(config.cloudflare.accountId && config.cloudflare.apiToken);
-  },
-  get localSigning() {
-    return Boolean(config.cloudflare.signingKeyId && config.cloudflare.signingKeyPem);
+  get media() {
+    return true;
   },
 };
 
@@ -77,8 +64,6 @@ export function missingSecrets() {
   if (!config.discord.botToken) missing.push('DISCORD_BOT_TOKEN');
   if (!config.discord.clientId) missing.push('DISCORD_CLIENT_ID');
   if (!config.discord.clientSecret) missing.push('DISCORD_CLIENT_SECRET');
-  if (!config.cloudflare.accountId) missing.push('CLOUDFLARE_ACCOUNT_ID');
-  if (!config.cloudflare.apiToken) missing.push('CLOUDFLARE_STREAM_API_TOKEN');
   if (!config.app.baseUrl) missing.push('PUBLIC_BASE_URL');
   return missing;
 }

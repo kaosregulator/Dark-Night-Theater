@@ -23,9 +23,9 @@ export const commands = [
 
   new SlashCommandBuilder()
     .setName('library')
-    .setDescription('Manage the Cloudflare Stream video library (staff only).')
-    .addSubcommand((s) => s.setName('sync').setDescription('Re-pull the full library from Cloudflare Stream'))
-    .addSubcommand((s) => s.setName('status').setDescription('Show library sync status and counts'))
+    .setDescription('Manage the local movie library (staff only).')
+    .addSubcommand((s) => s.setName('sync').setDescription('Re-scan the media folder for new/removed videos'))
+    .addSubcommand((s) => s.setName('status').setDescription('Show library counts and where to add movies'))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()),
 
   new SlashCommandBuilder()

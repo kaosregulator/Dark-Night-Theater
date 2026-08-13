@@ -1,148 +1,141 @@
 # 🛠️ Setup Guide — DarkNight Home Theater
 
-This walks you from an empty Discord app + Cloudflare account to a running
-theater. Everything is driven by secrets you paste in — no code changes needed.
+From an empty Discord app to a running theater. Movies come from **your own
+files** — there's no cloud service to configure.
 
 - [1. Create the Discord application](#1-create-the-discord-application)
 - [2. Enable the Activity](#2-enable-the-activity)
-- [3. Cloudflare Stream](#3-cloudflare-stream)
-- [4. Fill in your secrets](#4-fill-in-your-secrets)
-- [5. Deploy (Replit or Railway)](#5-deploy)
-- [6. URL Mappings (important for video)](#6-url-mappings)
-- [7. Register commands & test](#7-register-commands--test)
+- [3. Fill in your secrets](#3-fill-in-your-secrets)
+- [4. Deploy (Replit or Railway)](#4-deploy)
+- [5. URL Mapping](#5-url-mapping)
+- [6. Add movies](#6-add-movies)
+- [7. Register commands & watch](#7-register-commands--watch)
+- [Running from your own PC + free tunnel](#running-from-your-own-pc)
 - [Troubleshooting](#troubleshooting)
 
 ---
 
 ## 1. Create the Discord application
 
-1. Go to <https://discord.com/developers/applications> → **New Application**.
-2. **General Information** → copy the **Application ID** → this is `DISCORD_CLIENT_ID`.
-3. **OAuth2** → copy the **Client Secret** → `DISCORD_CLIENT_SECRET`.
-   (Reset it if it was never shown.)
-4. **Bot** (left sidebar) → **Reset Token** → copy → `DISCORD_BOT_TOKEN`.
-5. Still on **Bot**, scroll to **Privileged Gateway Intents**. You do **not** need
-   Message Content. Leave defaults; the bot uses Guilds + Voice States only.
-6. **Installation** (or **OAuth2 → URL Generator**) → scopes `bot` and
-   `applications.commands`. Bot permissions needed:
-   - **Create Instant Invite** (required — this is how the bot launches the Activity)
-   - **Send Messages**, **Embed Links**, **Use Application Commands**
+1. <https://discord.com/developers/applications> → **New Application**.
+2. **General Information** → copy **Application ID** → `DISCORD_CLIENT_ID`.
+3. **OAuth2** → copy **Client Secret** → `DISCORD_CLIENT_SECRET`.
+4. **Bot** → **Reset Token** → copy → `DISCORD_BOT_TOKEN`.
+5. **Installation** (or **OAuth2 → URL Generator**): scopes `bot` +
+   `applications.commands`. Bot permissions:
+   - **Create Instant Invite** (required — this launches the Activity)
+   - **Send Messages**, **Embed Links**, **Attach Files**, **Use Application Commands**
    Invite the bot to your server with the generated URL.
 
 ---
 
 ## 2. Enable the Activity
 
-1. In your app, open **Activities → Settings** (or **App Settings → Activities**).
-2. Turn **Enable Activities** on.
-3. You'll set the **URL Mappings** in [step 6](#6-url-mappings) once you know your
-   public URL. The root mapping `/` must point to **your deployment's host**.
-
-> The Activity is the in-Discord video surface. It only appears once URL mappings
-> point at a reachable HTTPS host (your Replit/Railway URL).
+1. In your app → **Activities → Settings** → turn **Enable Activities** on.
+2. You'll set the URL mapping in [step 5](#5-url-mapping) once you have a public URL.
 
 ---
 
-## 3. Cloudflare Stream
-
-1. In the Cloudflare dashboard, open **Stream**.
-2. **Account ID** — shown in the Stream sidebar → `CLOUDFLARE_ACCOUNT_ID`.
-3. **API token** — **My Profile → API Tokens → Create Token**. Use the
-   *"Read and write Cloudflare Stream"* template (Read is enough to play; Edit is
-   needed if you want `/library` to write categories later). Copy → `CLOUDFLARE_STREAM_API_TOKEN`.
-4. Upload some videos to Stream (any length — 1hr+ is fine; HLS handles it).
-5. **Categories & titles**: the app reads each video's metadata:
-   - **Title** ← the video's `meta.name`.
-   - **Category** ← a custom metadata field named `category`. Set it in the Stream
-     dashboard on a video (**Settings → Metadata**), or via the API. Videos with
-     none show as `Uncategorized`.
-6. **Private videos** (optional): toggle **Require signed URLs** on a video to keep
-   it protected. Playback then needs a signed token — handled automatically:
-   - **Default (no extra secret):** leave the signing-key vars blank; the server
-     mints a token via the Cloudflare API using your API token.
-   - **Faster (optional):** **Stream → Settings → Create signing key**, then set
-     `CLOUDFLARE_STREAM_SIGNING_KEY_ID` and `CLOUDFLARE_STREAM_SIGNING_KEY_PEM`
-     (the `pem` value). For multi-line PEM, base64-encode it and set
-     `CLOUDFLARE_STREAM_SIGNING_KEY_B64=1`.
-
----
-
-## 4. Fill in your secrets
+## 3. Fill in your secrets
 
 Copy `.env.example` → `.env` (local) or add each as a **Secret/Variable** on your
-host. Minimum to go live:
+host. The whole required set is just:
 
 ```
 DISCORD_BOT_TOKEN=...
 DISCORD_CLIENT_ID=...
 DISCORD_CLIENT_SECRET=...
-CLOUDFLARE_ACCOUNT_ID=...
-CLOUDFLARE_STREAM_API_TOKEN=...
 PUBLIC_BASE_URL=https://your-app.up.railway.app   # or your repl URL
 SESSION_SECRET=<any long random string>
+HOST_ADMIN_KEY=<a password for the /host uploader>   # optional; defaults to SESSION_SECRET
 ADMIN_USER_IDS=<your Discord user id>
 ```
 
+That's it — no Cloudflare, no storage keys.
+
 ---
 
-## 5. Deploy
+## 4. Deploy
 
 ### Replit
-1. Import this repo into Replit.
-2. Add the secrets above in the **Secrets** panel (lock icon).
-3. Replit uses `.replit` → runs `npm run build && npm start` automatically.
-4. Copy the public URL (e.g. `https://dark-night-theater.<you>.repl.co`) into
-   `PUBLIC_BASE_URL`, then restart.
+1. Import this repo. Add the secrets above in the **Secrets** panel.
+2. `.replit` runs `npm run build && npm start` automatically.
+3. Copy the public URL into `PUBLIC_BASE_URL`, restart.
 
 ### Railway
-1. **New Project → Deploy from GitHub** → this repo.
-2. Add the secrets as **Variables**.
-3. `nixpacks.toml` builds (`npm run build`) and starts (`npm start`) for you.
-4. Under **Settings → Networking**, generate a domain, put it in `PUBLIC_BASE_URL`,
-   redeploy.
+1. **New Project → Deploy from GitHub** → this repo. Add the secrets as **Variables**.
+2. `nixpacks.toml` builds and starts it.
+3. **Settings → Networking** → generate a domain → put it in `PUBLIC_BASE_URL`, redeploy.
 
-Either way: open the URL. If something's missing you'll see a setup page listing
-it. `GET /api/status` returns machine-readable readiness.
+Open the URL. Missing something? The page (and `GET /api/status`) tells you.
+
+> **Disk note:** uploaded movies live on the server's disk. Replit/Railway
+> containers have limited, **ephemeral** disk — big libraries may exceed it and
+> reset on redeploy. For a large permanent library, run from a machine with real
+> disk (see [Running from your own PC](#running-from-your-own-pc)).
 
 ---
 
-## 6. URL Mappings
+## 5. URL Mapping
 
-In **Discord Developer Portal → your app → Activities → URL Mappings**:
+In **Developer Portal → your app → Activities → URL Mappings**, add **one** row:
 
 | Prefix | Target |
 | --- | --- |
 | `/` | your host, e.g. `your-app.up.railway.app` (no `https://`) |
-| `/stream0` | your Cloudflare host, e.g. `customer-<code>.cloudflarestream.com` |
-| `/stream1` | `videodelivery.net` |
 
-- Find `customer-<code>.cloudflarestream.com` in any video's playback URL in the
-  Stream dashboard (or call `GET /api/config` on your deployment — it lists the
-  `streamTargets` the client will proxy).
-- The client calls `patchUrlMappings` with these same targets so hls.js requests
-  are routed through Discord's proxy — **without these mappings, video won't load
-  inside the Activity** even though everything else works.
-
-> If you add videos from a new Cloudflare host later, add a matching `/streamN`
-> mapping. `GET /api/config` always shows the current list.
+That's all — movies are served from the same host, so there's nothing else to map.
 
 ---
 
-## 7. Register commands & test
+## 6. Add movies
+
+Two ways, use either:
+
+- **Upload from your device (easiest):** open `https://<PUBLIC_BASE_URL>/host`,
+  enter your admin key, and **drag in** a movie. It appears in `/watch` right away.
+- **Drop files in the folder:** put files in the `media/` folder (or wherever
+  `MEDIA_DIR` points), then run **`/library sync`** in Discord.
+
+**Format:** use **MP4 (H.264/AAC)** or **WebM**. MKV/AVI won't play in browsers —
+remux to MP4 first (e.g. `ffmpeg -i in.mkv -c copy out.mp4` if the codecs are
+already H.264/AAC, otherwise transcode). The `/host` page flags non-playable files.
+
+---
+
+## 7. Register commands & watch
 
 ```bash
 npm run register     # one-time (re-run after changing commands)
 ```
-- Set `DISCORD_DEV_GUILD_ID` to your test server id for **instant** command
-  registration while developing. Leave it blank in production (global commands
-  can take up to ~1h to appear).
+Set `DISCORD_DEV_GUILD_ID` to your test server id for **instant** registration
+while developing (global commands can take up to ~1h).
 
 Then in Discord:
-1. `/library sync` — pulls your Cloudflare videos (staff only).
+1. `/library sync` (or upload at `/host`) so movies show up.
 2. Join a **voice channel**.
-3. `/watch` → pick a movie → **Start Watch Party**. A control panel appears in the
-   channel; open the **Theater** from the voice channel to watch.
-4. Press ▶️ — everyone in the Activity plays in sync.
+3. `/watch` → pick a movie → walk the pre-show → **Enter Theater**. Everyone in the
+   Activity plays in sync; the host drives ▶️/⏸️/⏪/⏩.
+
+---
+
+## Running from your own PC
+
+Great for big libraries / serving straight off your drive:
+
+1. `npm install && npm run build`
+2. Point `MEDIA_DIR` at your movies folder (or drop files into `media/`).
+3. Expose it with a **free, temporary tunnel** (no signup):
+   ```bash
+   npx localtunnel --port 3000
+   ```
+   It prints an `https://…loca.lt` URL — set that as `PUBLIC_BASE_URL`, and use it
+   for the Activity URL mapping. (Cloudflare Tunnel `cloudflared` works too.)
+4. `npm start`. As long as your PC is on, it streams.
+
+**Reality check:** your **home upload speed** is the ceiling — ~5–8 Mbps per 1080p
+viewer, so most connections comfortably serve a handful of friends, not a crowd.
+The laptop must stay awake/online for the whole movie.
 
 ---
 
@@ -151,9 +144,10 @@ Then in Discord:
 | Symptom | Fix |
 | --- | --- |
 | Setup page instead of the theater | Run `npm run build`; check `/api/status` for missing secrets. |
-| Slash commands don't appear | Run `npm run register`; set `DISCORD_DEV_GUILD_ID` for instant dev registration. |
-| "Start Watch Party" says it can't launch | Give the bot **Create Instant Invite** permission in that channel. |
-| Activity opens but video is black | Add the **`/stream*` URL Mappings** (step 6) for your Cloudflare host(s). |
-| Private video won't play | Ensure the API token has Stream read; or set a signing key. Token TTL must exceed movie length (`STREAM_TOKEN_TTL_SECONDS`, default 6h). |
-| Library empty | Run `/library sync`; confirm `CLOUDFLARE_ACCOUNT_ID` + token and that videos are **Ready**. |
-| Autoplay blocked on mobile | The Theater shows **▶ Tap to start** — that first tap satisfies the browser gesture requirement. |
+| Slash commands don't appear | `npm run register`; set `DISCORD_DEV_GUILD_ID` for instant dev registration. |
+| "Start Watch Party" can't launch | Give the bot **Create Instant Invite** permission in that channel. |
+| Library empty | Upload at `/host` or drop files in `media/`, then `/library sync`. |
+| Video is black / won't play | It's probably MKV/AVI or an unsupported codec — remux to MP4 (H.264/AAC). |
+| `/host` says "Bad admin key" | Use `HOST_ADMIN_KEY` (or `SESSION_SECRET` if you left it blank). |
+| Buffering with several viewers | You're limited by the host's upload bandwidth — fewer viewers or a bigger pipe. |
+| Autoplay blocked on mobile | The Theater shows **▶ Tap to start** — that first tap satisfies the browser. |

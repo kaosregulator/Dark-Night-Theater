@@ -1,7 +1,7 @@
 {
   "name": "darknight-home-theater",
   "version": "1.0.0",
-  "description": "DarkNight Home Theater — a Discord-native social movie theater Activity powered by Cloudflare Stream.",
+  "description": "DarkNight Home Theater — a Discord-native social movie theater Activity that streams movies from your own device/files.",
   "type": "module",
   "engines": {
     "node": ">=18.17"

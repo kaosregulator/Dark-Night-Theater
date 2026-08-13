@@ -7,7 +7,7 @@ import {
 } from 'discord.js';
 import * as library from '../../services/library-store.js';
 import * as sessions from '../../services/sessions.js';
-import { getPlaybackUrls } from '../../cloudflare/stream.js';
+import { getPlayback } from '../../media/store.js';
 import { getSettings } from '../../services/settings-store.js';
 import { canHost, canManage } from '../permissions.js';
 import { formatDuration, videoLabel, COLORS } from './format.js';
@@ -47,7 +47,7 @@ export async function handleWatchCommand(interaction) {
   if (library.getCachedLibrary().length === 0) {
     return interaction.reply({
       content:
-        '📭 The library is empty. An admin should run `/library sync` after wiring Cloudflare Stream.',
+        '📭 The library is empty. An admin can add movies at `<your-url>/host`, then run `/library sync`.',
       ephemeral: true,
     });
   }
@@ -141,7 +141,7 @@ export async function handleWatchParty(interaction, uid) {
   if (!video) return interaction.reply({ content: 'That video is unavailable.', ephemeral: true });
 
   await interaction.deferReply({ ephemeral: true });
-  const playback = await getPlaybackUrls(video);
+  const playback = getPlayback(video);
   sessions.startClanMovie(voice.id, {
     hostId: member.id,
     guildId: interaction.guildId,

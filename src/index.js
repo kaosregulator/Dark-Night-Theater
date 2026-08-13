@@ -17,8 +17,8 @@ function banner() {
   const miss = missingSecrets();
   log.info(`Bot ready:        ${readiness.bot ? '✅' : '❌'}`);
   log.info(`Activity OAuth:   ${readiness.activity ? '✅' : '❌'}`);
-  log.info(`Cloudflare:       ${readiness.cloudflare ? '✅' : '❌'}`);
-  log.info(`Signed playback:  ${readiness.localSigning ? 'local key' : readiness.cloudflare ? 'API tokens' : '❌'}`);
+  log.info(`Movie host:       ✅ local files (${config.media.dir})`);
+  if (config.app.baseUrl) log.info(`Add movies at:    ${config.app.baseUrl}/host`);
   if (miss.length) log.warn(`Missing secrets:  ${miss.join(', ')}`);
   if (!config.app.baseUrl) log.warn('PUBLIC_BASE_URL not set — Activity URL mapping needs it.');
 }
@@ -32,10 +32,8 @@ async function main() {
   // Bot starts if configured.
   await startBot().catch((err) => log.error('Bot failed to start:', err.message));
 
-  // Warm the library cache on boot if Cloudflare is ready.
-  if (readiness.cloudflare) {
-    syncLibrary().catch((err) => log.warn('Initial library sync skipped:', err.message));
-  }
+  // Scan the media folder on boot so files dropped in are ready immediately.
+  syncLibrary().catch((err) => log.warn('Initial media scan skipped:', err.message));
 }
 
 main().catch((err) => {

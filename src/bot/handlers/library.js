@@ -1,10 +1,10 @@
 import { EmbedBuilder } from 'discord.js';
 import * as library from '../../services/library-store.js';
-import { readiness } from '../../config.js';
+import { config } from '../../config.js';
 import { canManage } from '../permissions.js';
 import { COLORS } from './format.js';
 
-// /library sync | status — staff tools to manage the Cloudflare Stream library.
+// /library sync | status — staff tools to manage the local movie library.
 
 export async function handleLibraryCommand(interaction) {
   const sub = interaction.options.getSubcommand();
@@ -13,31 +13,30 @@ export async function handleLibraryCommand(interaction) {
     return interaction.reply({ content: '🔒 You don’t have permission to manage the library.', ephemeral: true });
   }
 
+  const hostUrl = config.app.baseUrl ? `${config.app.baseUrl}/host` : '`<PUBLIC_BASE_URL>`/host';
+
   if (sub === 'status') {
     const embed = new EmbedBuilder()
       .setColor(COLORS.gold)
       .setTitle('📚 Library status')
       .addFields(
-        { name: 'Videos cached', value: String(library.getCachedLibrary().length), inline: true },
-        { name: 'Last synced', value: library.lastSyncedAt() || 'never', inline: true },
-        { name: 'Cloudflare', value: readiness.cloudflare ? '✅ configured' : '❌ not configured', inline: true }
+        { name: 'Videos', value: String(library.getCachedLibrary().length), inline: true },
+        { name: 'Last scanned', value: library.lastSyncedAt() || 'never', inline: true },
+        { name: 'Media folder', value: `\`${config.media.dir}\``, inline: false },
+        { name: 'Add movies', value: `Upload from your device at ${hostUrl}` }
       );
     return interaction.reply({ embeds: [embed], ephemeral: true });
   }
 
   if (sub === 'sync') {
-    if (!readiness.cloudflare) {
-      return interaction.reply({
-        content: '❌ Cloudflare isn’t configured. Set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_STREAM_API_TOKEN`.',
-        ephemeral: true,
-      });
-    }
     await interaction.deferReply({ ephemeral: true });
     try {
       const videos = await library.syncLibrary();
-      await interaction.editReply(`✅ Synced **${videos.length}** videos from Cloudflare Stream.`);
+      await interaction.editReply(
+        `✅ Scanned the media folder — **${videos.length}** video(s).\nAdd more from your device at ${hostUrl}`
+      );
     } catch (err) {
-      await interaction.editReply(`⚠️ Sync failed: ${err.message}`);
+      await interaction.editReply(`⚠️ Scan failed: ${err.message}`);
     }
   }
 }

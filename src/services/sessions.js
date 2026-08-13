@@ -25,6 +25,8 @@ function emptyPlayback() {
   return {
     videoUid: null,
     videoName: null,
+    src: null, // local /media URL (or HLS manifest)
+    kind: null, // 'file' | 'hls'
     hls: null,
     dash: null,
     playing: false,
@@ -155,6 +157,8 @@ export function startClanMovie(channelId, { hostId, guildId, video, playback }) 
     ...emptyPlayback(),
     videoUid: video.uid,
     videoName: video.name,
+    src: playback.src,
+    kind: playback.kind,
     hls: playback.hls,
     dash: playback.dash,
     playing: false,

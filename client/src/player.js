@@ -1,7 +1,7 @@
 import Hls from 'hls.js';
 
-// Video player wrapper around hls.js. Plays Cloudflare Stream HLS (adaptive
-// bitrate — ideal for 1hr+ movies) and keeps the local <video> aligned with the
+// Video player wrapper. Plays local MP4/WebM (served with range support) and
+// optionally HLS via hls.js, and keeps the local <video> aligned with the
 // shared playback anchor coming from the sync server. Drift beyond a threshold
 // triggers a seek; small drift is corrected with playbackRate nudging.
 
@@ -17,24 +17,25 @@ export class TheaterPlayer {
     this.onLocalControl = () => {};
   }
 
-  load({ uid, hls, dash }) {
-    if (this.currentUid === uid && this.hls) return;
+  load({ uid, hls, dash, src, kind }) {
+    if (this.currentUid === uid && (this.hls || this.video.src)) return;
     this.currentUid = uid;
     this._destroyHls();
 
-    if (Hls.isSupported() && hls) {
-      const h = new Hls({
-        // Big buffers keep long movies smooth; low latency off (VOD).
-        maxBufferLength: 30,
-        maxMaxBufferLength: 120,
-        enableWorker: true,
-      });
-      h.loadSource(hls);
+    // Local file (MP4/WebM) served with range support — just point <video> at it.
+    if (kind === 'file' && src) {
+      this.video.src = src;
+      return;
+    }
+    // HLS (either a local .m3u8 or a remote manifest).
+    const manifest = kind === 'hls' ? src : hls;
+    if (Hls.isSupported() && manifest) {
+      const h = new Hls({ maxBufferLength: 30, maxMaxBufferLength: 120, enableWorker: true });
+      h.loadSource(manifest);
       h.attachMedia(this.video);
       this.hls = h;
-    } else if (this.video.canPlayType('application/vnd.apple.mpegurl') && hls) {
-      // Safari / iOS play HLS natively.
-      this.video.src = hls;
+    } else if (this.video.canPlayType('application/vnd.apple.mpegurl') && manifest) {
+      this.video.src = manifest; // Safari / iOS native HLS
     } else if (dash) {
       this.video.src = dash;
     }
@@ -51,8 +52,14 @@ export class TheaterPlayer {
   // Apply the authoritative shared state to this player.
   applyState(playback) {
     if (!playback?.videoUid) return;
-    if (playback.hls || playback.dash) {
-      this.load({ uid: playback.videoUid, hls: playback.hls, dash: playback.dash });
+    if (playback.src || playback.hls || playback.dash) {
+      this.load({
+        uid: playback.videoUid,
+        hls: playback.hls,
+        dash: playback.dash,
+        src: playback.src,
+        kind: playback.kind,
+      });
     }
 
     // Target position accounting for time elapsed since the server snapshot.
@@ -87,8 +94,8 @@ export class TheaterPlayer {
   }
 
   // For PRIVATE viewing: free local control, no server sync.
-  playPrivate({ uid, hls, dash }, resumeAt = 0) {
-    this.load({ uid, hls, dash });
+  playPrivate({ uid, hls, dash, src, kind }, resumeAt = 0) {
+    this.load({ uid, hls, dash, src, kind });
     const seek = () => {
       if (resumeAt > 0) {
         try {

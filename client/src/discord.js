@@ -1,8 +1,8 @@
-import { DiscordSDK, patchUrlMappings } from '@discord/embedded-app-sdk';
+import { DiscordSDK } from '@discord/embedded-app-sdk';
 
-// Handles the Discord Embedded App SDK handshake: identify the user, learn the
-// voice channel / guild we're in, and route Cloudflare Stream through Discord's
-// proxy so video plays inside the sandboxed Activity iframe.
+// Handles the Discord Embedded App SDK handshake: identify the user and learn
+// the voice channel / guild we're in. Movies are served same-origin by our own
+// server (with range support), so there's nothing external to proxy.
 
 export const dc = {
   sdk: null,
@@ -40,13 +40,6 @@ export async function initDiscord(onStatus = () => {}) {
   const sdk = new DiscordSDK(cfg.clientId);
   dc.sdk = sdk;
   await sdk.ready();
-
-  // Route Cloudflare Stream hosts through Discord's proxy. These prefixes must
-  // also exist as URL Mappings in the Developer Portal (see SETUP.md).
-  const targets = cfg.streamTargets || [];
-  if (targets.length) {
-    patchUrlMappings(targets.map((target, i) => ({ prefix: `/stream${i}`, target })));
-  }
 
   onStatus('Authorizing…');
   const { code } = await sdk.commands.authorize({
