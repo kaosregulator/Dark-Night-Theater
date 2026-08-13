@@ -3,6 +3,7 @@ import { config, readiness } from '../config.js';
 import { log } from '../logger.js';
 import { routeInteraction } from './handlers/index.js';
 import { wireControlPanelRefresh } from './handlers/theater.js';
+import { setDiscordClient } from './clientRef.js';
 
 // Boots the Discord bot. Returns the client (or null if not configured, so the
 // web server can still run and show setup help).
@@ -28,6 +29,7 @@ export async function startBot() {
   client.on(Events.InteractionCreate, routeInteraction);
   client.on(Events.Error, (e) => log.error('discord client error:', e.message));
 
+  setDiscordClient(client); // let the web layer post panels / create invites
   await client.login(config.discord.botToken);
   return client;
 }

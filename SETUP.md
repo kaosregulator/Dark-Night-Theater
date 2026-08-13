@@ -90,10 +90,14 @@ That's all — movies are served from the same host, so there's nothing else to 
 
 ## 6. Add movies
 
-Two ways, use either:
+Three ways, use whichever:
 
-- **Upload from your device (easiest):** open `https://<PUBLIC_BASE_URL>/host`,
-  enter your admin key, and **drag in** a movie. It appears in `/watch` right away.
+- **From inside `/watch` (easiest):** run `/watch` in a voice channel and tap
+  **📤 Host a Movie (from my device)**. It opens a one-tap uploader (no key —
+  it already knows your server + voice channel); pick a file and it uploads and
+  **starts the watch party** automatically. Shown to hosts/admins only.
+- **Upload page directly:** open `https://<PUBLIC_BASE_URL>/host`, enter your
+  admin key, and **drag in** a movie. It appears in `/watch` right away.
 - **Drop files in the folder:** put files in the `media/` folder (or wherever
   `MEDIA_DIR` points), then run **`/library sync`** in Discord.
 

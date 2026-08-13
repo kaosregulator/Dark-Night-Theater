@@ -8,6 +8,8 @@ import {
 import * as library from '../../services/library-store.js';
 import * as sessions from '../../services/sessions.js';
 import { getPlayback } from '../../media/store.js';
+import { signHostSession } from '../../media/token.js';
+import { config } from '../../config.js';
 import { getSettings } from '../../services/settings-store.js';
 import { canHost, canManage } from '../permissions.js';
 import { formatDuration, videoLabel, COLORS } from './format.js';
@@ -18,6 +20,29 @@ import { createActivityInvite, publishPanel } from './theater.js';
 //  start a synced Watch Party in your voice channel or watch privately.
 //  Browsing is ephemeral (personal); starting a party posts a public panel.
 // ============================================================================
+
+// A one-tap Link button that opens the pre-authorised /host page (no key, knows
+// the host's server + voice/text channel) so they can pick a device file and
+// have the party start automatically. Only shown to users who may host.
+function hostButtonRow(interaction) {
+  const member = interaction.member;
+  if (!member || !(canHost(member) || canManage(member))) return null;
+  if (!config.app.baseUrl) return null; // need a public URL to link to
+  const token = signHostSession({
+    userId: member.id,
+    guildId: interaction.guildId,
+    voiceChannelId: member.voice?.channelId || '',
+    textChannelId: interaction.channelId,
+  });
+  const url = `${config.app.baseUrl}/host?s=${encodeURIComponent(token)}`;
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setStyle(ButtonStyle.Link)
+      .setLabel('Host a Movie (from my device)')
+      .setEmoji('📤')
+      .setURL(url)
+  );
+}
 
 function browseComponents(videos) {
   // Discord select menus cap at 25 options.
@@ -45,9 +70,12 @@ export async function handleWatchCommand(interaction) {
   const videos = library.search({ query, category });
 
   if (library.getCachedLibrary().length === 0) {
+    const hostRow = hostButtonRow(interaction);
     return interaction.reply({
-      content:
-        '📭 The library is empty. An admin can add movies at `<your-url>/host`, then run `/library sync`.',
+      content: hostRow
+        ? '📭 No movies yet. Tap **Host a Movie** below to add one from your device and start a party.'
+        : '📭 The library is empty. An admin can add movies at `<your-url>/host`, then run `/library sync`.',
+      components: hostRow ? [hostRow] : [],
       ephemeral: true,
     });
   }
@@ -66,7 +94,9 @@ export async function handleWatchCommand(interaction) {
     .addFields({ name: 'Categories', value: cats || '—' })
     .setFooter({ text: 'Showing up to 25 — refine with /watch search:<text> or category:<name>' });
 
-  await interaction.reply({ embeds: [embed], components: browseComponents(videos), ephemeral: true });
+  const hostRow = hostButtonRow(interaction);
+  const components = [...browseComponents(videos), ...(hostRow ? [hostRow] : [])];
+  await interaction.reply({ embeds: [embed], components, ephemeral: true });
 }
 
 // A video was picked from the select menu — show details + action buttons.
@@ -186,5 +216,7 @@ export async function handleWatchBack(interaction) {
     .setColor(COLORS.gold)
     .setTitle('🍿 DarkNight Library')
     .setDescription('Pick a movie to see details.');
-  await interaction.update({ embeds: [embed], components: browseComponents(videos) });
+  const hostRow = hostButtonRow(interaction);
+  const components = [...browseComponents(videos), ...(hostRow ? [hostRow] : [])];
+  await interaction.update({ embeds: [embed], components });
 }

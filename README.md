@@ -54,7 +54,10 @@ in a browser — remux them to MP4 first. The `/host` page flags non-playable fi
   join/leave notices, **🍿 popcorn / 🥤 soda / 🍫 candy** social actions.
 - **1hr+ videos** via HTTP range streaming from your files.
 - **Per-server settings** (`/theater-settings`) — every guild has its own config.
-- **Add movies from your device** at `<your-url>/host` (drag & drop uploader).
+- **Add movies from your device — right inside `/watch`.** A **📤 Host a Movie**
+  button opens a one-tap, pre-authorised uploader (no key, already knows your
+  server + voice channel); pick a file and it uploads and **starts the party**
+  for you. (Also available directly at `<your-url>/host`.)
 - **Responsive** — one build for Desktop, Browser, and Mobile.
 
 ---
