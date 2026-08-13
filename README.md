@@ -56,10 +56,13 @@ software you agree to it.
 ## Features
 
 - **`/watch`** — search / browse the library (thumbnail, title, duration, category).
-- **In-Discord gamified pre-show** — before the movie opens, a **Canvas-generated**
-  sequence right in the text channel: **Box Office** preview (the owner's
-  poster/title/screen from Cloudflare) → **🎟️ Ticket** (with your avatar + seat) →
-  **🍿 Concession stand** (random snack) → **🪑 Seat** → **🎬 Enter Theater**.
+- **In-Discord gamified pre-show** — the `/watch` menu is **private (ephemeral)**,
+  but the pre-show is **one public, self-deleting message** the whole channel
+  watches: a **Canvas-generated** sequence — **Box Office** preview (the owner's
+  poster/title/screen from Cloudflare) → **🎟️ Ticket** (your avatar + seat) →
+  **🍿 Concession stand** (random snack) → **🪑 Seat** → **🎬 Enter Theater**, then it
+  **vanishes** as the user drops into the movie. Only the person who started it can
+  press the buttons; anyone else who taps is nudged to run `/watch` themselves.
 - **Watch Party (clan)** — synced playback for everyone in the voice channel.
 - **Private viewing** — watch on your own, with saved position + resume + history.
 - **One host controls** play / pause / seek; **🔒 lock** so only the host drives.
