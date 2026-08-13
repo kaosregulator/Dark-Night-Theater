@@ -1,0 +1,28 @@
+{
+  "name": "darknight-home-theater",
+  "version": "1.0.0",
+  "description": "DarkNight Home Theater — a Discord-native social movie theater Activity powered by Cloudflare Stream.",
+  "type": "module",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "build": "vite build",
+    "register": "node src/bot/register-commands.js",
+    "dev": "node --watch src/index.js",
+    "dev:client": "vite",
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "dependencies": {
+    "@discord/embedded-app-sdk": "^1.9.0",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "hls.js": "^1.5.17",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.11"
+  }
+}

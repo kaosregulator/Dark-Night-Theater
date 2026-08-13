@@ -1,0 +1,6 @@
+# Railway / Nixpacks build. Builds the Activity frontend, then starts the server.
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "npm start"

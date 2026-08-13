@@ -1,0 +1,2 @@
+# Runtime data (per-guild settings, cached library, watch history) is written here.
+# The .json files are gitignored; this keeps the folder in the repo.

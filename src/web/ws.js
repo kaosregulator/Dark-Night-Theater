@@ -1,0 +1,110 @@
+import { WebSocketServer } from 'ws';
+import { verifyDiscordToken } from '../util/auth.js';
+import * as sessions from '../services/sessions.js';
+import { getSettings } from '../services/settings-store.js';
+import { log } from '../logger.js';
+
+// Real-time sync hub. One WebSocket per participant in the Activity. The client
+// connects to /ws?channelId=<voiceChannelId>, then sends { type:'hello', token,
+// guildId } to authenticate. After that, control/seat/item messages flow in and
+// room snapshots flow out. The same room is also mutated by the text-channel
+// control buttons (see bot handlers), so both surfaces stay in lockstep.
+
+export function attachWebSocket(server) {
+  const wss = new WebSocketServer({ server, path: '/ws' });
+
+  wss.on('connection', (ws, req) => {
+    const url = new URL(req.url, 'http://localhost');
+    const channelId = url.searchParams.get('channelId');
+    ws.channelId = channelId;
+    ws.user = null;
+    ws.alive = true;
+
+    const send = (obj) => {
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
+    };
+
+    // Forward room updates for this channel to the socket.
+    const onUpdate = (payload) => {
+      if (payload.channelId === ws.channelId) send({ type: 'sync', ...payload });
+    };
+    sessions.bus.on('update', onUpdate);
+
+    ws.on('pong', () => (ws.alive = true));
+
+    ws.on('message', async (raw) => {
+      let msg;
+      try {
+        msg = JSON.parse(raw.toString());
+      } catch {
+        return;
+      }
+
+      // Authenticate first.
+      if (msg.type === 'hello') {
+        const user = await verifyDiscordToken(msg.token);
+        if (!user) return send({ type: 'error', error: 'auth-failed' });
+        ws.user = user;
+        ws.guildId = msg.guildId || null;
+        sessions.join(ws.channelId, { ...user, guildId: ws.guildId });
+        return send({ type: 'welcome', user, snapshot: sessions.snapshot(sessions.getRoom(ws.channelId)) });
+      }
+
+      if (!ws.user) return send({ type: 'error', error: 'not-authenticated' });
+      const uid = ws.user.id;
+
+      switch (msg.type) {
+        case 'heartbeat':
+          send({ type: 'pong' });
+          break;
+
+        case 'seat':
+          sessions.takeSeat(ws.channelId, uid, msg.seat);
+          break;
+
+        case 'item': {
+          const settings = ws.guildId ? getSettings(ws.guildId) : null;
+          if (settings && !settings.allowSocialInteractions) break;
+          sessions.giveItem(ws.channelId, uid, msg.item);
+          break;
+        }
+
+        case 'control':
+          // Host-only enforcement lives in sessions.control().
+          sessions.control(ws.channelId, uid, msg.action, msg.value);
+          break;
+
+        case 'claim-host':
+          // First person / owner grabbing host when none set.
+          if (!sessions.isHost(ws.channelId, uid) && !sessions.getRoom(ws.channelId).hostId) {
+            sessions.setHost(ws.channelId, uid);
+          }
+          break;
+
+        default:
+          break;
+      }
+    });
+
+    ws.on('close', () => {
+      sessions.bus.off('update', onUpdate);
+      if (ws.user) sessions.leave(ws.channelId, ws.user.id);
+    });
+  });
+
+  // Drop dead sockets.
+  const interval = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (!ws.alive) {
+        ws.terminate();
+        continue;
+      }
+      ws.alive = false;
+      ws.ping();
+    }
+  }, 30_000);
+  wss.on('close', () => clearInterval(interval));
+
+  log.info('WebSocket sync hub attached at /ws');
+  return wss;
+}
