@@ -273,3 +273,66 @@ function wrap(ctx, str, x, y, maxW, lh, opts) {
   }
   if (line) text(ctx, line, x, yy, opts);
 }
+
+// ---- /join audience board + theater card (new; existing renders untouched) --
+export async function renderTheaterCard(party) {
+  const { c, ctx } = base();
+  marquee(ctx, '★  NOW PLAYING  ★');
+
+  const x = 40, y = 70, w = W - 80, h = 175;
+  ctx.fillStyle = vGradient(ctx, x, y, w, h, '#2a2150', '#12101f');
+  roundRect(ctx, x, y, w, h, 12);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(201,162,39,0.5)';
+  ctx.lineWidth = 6;
+  roundRect(ctx, x - 3, y - 3, w + 6, h + 6, 14);
+  ctx.stroke();
+
+  // LIVE badge
+  ctx.fillStyle = C.red2;
+  roundRect(ctx, x + 16, y + 16, 96, 30, 15);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(x + 36, y + 31, 6, 0, Math.PI * 2);
+  ctx.fill();
+  text(ctx, 'LIVE', x + 52, y + 37, { size: 16, bold: true, color: '#fff' });
+
+  text(ctx, ellipsize(ctx, noEmoji(party.videoName) || 'A movie', 34, true, w - 40), x + w / 2, y + h / 2 + 16, {
+    size: 34, bold: true, align: 'center', color: C.gold2,
+  });
+  text(ctx, party.playing ? 'Playing now' : 'Paused', x + w / 2, y + h - 18, { size: 15, align: 'center', color: C.muted });
+
+  let cx = 40;
+  cx += chip(ctx, `HOST  ${noEmoji(party.hostName) || '—'}`, cx, 272) + 12;
+  cx += chip(ctx, `WATCHING  ${party.viewers}`, cx, 272) + 12;
+  chip(ctx, `VOICE  ${noEmoji(party.channelName) || '—'}`, cx, 272);
+  text(ctx, 'Tap “Join Theater” to grab your seat.', 40, 340, { size: 16, color: C.text });
+  return c.toBuffer('image/png');
+}
+
+export async function renderLobbyBoard(parties) {
+  const { c, ctx } = base();
+  marquee(ctx, '★  DARKNIGHT — NOW PLAYING  ★');
+  let y = 66;
+  parties.slice(0, 5).forEach((p, i) => {
+    const x = 40, w = W - 80, h = 56;
+    ctx.fillStyle = i % 2 ? '#14141f' : '#1c1c2b';
+    roundRect(ctx, x, y, w, h, 10);
+    ctx.fill();
+    ctx.strokeStyle = C.line;
+    ctx.lineWidth = 1;
+    roundRect(ctx, x, y, w, h, 10);
+    ctx.stroke();
+    ctx.fillStyle = C.red2;
+    ctx.beginPath();
+    ctx.arc(x + 22, y + h / 2, 7, 0, Math.PI * 2);
+    ctx.fill();
+    text(ctx, ellipsize(ctx, noEmoji(p.videoName) || 'Movie', 22, true, 360), x + 44, y + 25, { size: 22, bold: true, color: C.text });
+    text(ctx, `Host ${noEmoji(p.hostName) || '—'}   ·   ${p.viewers} watching   ·   ${noEmoji(p.channelName) || ''}`, x + 44, y + 46, { size: 13, color: C.muted });
+    text(ctx, `#${i + 1}`, x + w - 20, y + 33, { size: 20, bold: true, color: C.gold2, align: 'right' });
+    y += h + 10;
+  });
+  if (parties.length > 5) text(ctx, `+ ${parties.length - 5} more…`, W / 2, y + 18, { size: 14, align: 'center', color: C.muted });
+  return c.toBuffer('image/png');
+}

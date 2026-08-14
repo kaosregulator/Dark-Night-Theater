@@ -86,19 +86,53 @@ function broadcast(room, extra = {}) {
 
 // ---- presence ---------------------------------------------------------------
 
+// A seat a viewer picked in the /join pre-show, applied when they open the
+// Activity (so their choice carries over). Cosmetic; falls back to null if taken.
+const preferredSeats = new Map(); // channelId -> Map(userId -> seat)
+export function setPreferredSeat(channelId, userId, seat) {
+  let m = preferredSeats.get(channelId);
+  if (!m) preferredSeats.set(channelId, (m = new Map()));
+  m.set(userId, seat);
+}
+
 export function join(channelId, user) {
   const room = getRoom(channelId);
   if (user.guildId) room.guildId = user.guildId;
   const existing = room.participants.get(user.id);
+  let seat = existing?.seat ?? null;
+  if (seat == null) {
+    const pref = preferredSeats.get(channelId)?.get(user.id);
+    const free = pref != null && ![...room.participants.values()].some((p) => p.seat === pref);
+    if (free) seat = pref;
+  }
   room.participants.set(user.id, {
     id: user.id,
     name: user.name,
     avatar: user.avatar || null,
-    seat: existing?.seat ?? null,
+    seat,
     items: existing?.items ?? [],
   });
   broadcast(room, { event: { type: 'join', user: { id: user.id, name: user.name } } });
   return room;
+}
+
+// Active watch parties (clan movie loaded) — the /join audience board reads this.
+export function listActiveRooms(guildId) {
+  const out = [];
+  for (const room of rooms.values()) {
+    if (room.mode !== 'clan' || !room.playback.videoUid) continue;
+    if (guildId && room.guildId !== guildId) continue;
+    out.push({
+      channelId: room.channelId,
+      guildId: room.guildId,
+      hostId: room.hostId,
+      videoUid: room.playback.videoUid,
+      videoName: room.playback.videoName,
+      viewers: room.participants.size,
+      playing: room.playback.playing,
+    });
+  }
+  return out;
 }
 
 export function leave(channelId, userId) {

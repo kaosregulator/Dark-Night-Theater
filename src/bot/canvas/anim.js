@@ -310,3 +310,39 @@ export async function animSeated(user, video, { seat }) {
     text(ctx, `Seated — ${seat}`, W / 2, 288, { size: 16, bold: true, align: 'center', color: C.text });
   });
 }
+
+// ---- THROW POPCORN (used by the /join seated screen) -----------------------
+export async function animThrowPopcorn(user, video) {
+  const avatar = await loadRemote(user?.avatar);
+  const N = 14;
+  const kernels = Array.from({ length: 14 }, (_, k) => ({ dx: (k - 7) * 16, delay: (k % 5) / 12 }));
+  return buildGif(N, 70, (ctx, i, t) => {
+    bg(ctx);
+    marquee(ctx, 'DARKNIGHT CINEMA');
+    // screen at top
+    const px = 190, py = 44, pw = 260, ph = 92;
+    ctx.fillStyle = vGradient(ctx, px, py, pw, ph, '#2a2150', '#12101f');
+    roundRect(ctx, px, py, pw, ph, 8);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(201,162,39,0.55)';
+    ctx.lineWidth = 4;
+    roundRect(ctx, px, py, pw, ph, 8);
+    ctx.stroke();
+    text(ctx, ellipsize(ctx, noEmoji(video?.name) || '', 16, true, 240), W / 2, 156, { size: 16, bold: true, align: 'center', color: C.gold2 });
+    // viewer bottom-left
+    drawAvatar(ctx, avatar, user, 90, 250, 30);
+    // popcorn arcs from the viewer toward the screen
+    const sx = 120, sy = 232, ex = 320, ey = 100;
+    for (const k of kernels) {
+      const p = Math.max(0, Math.min(1, (t - k.delay) / 0.7));
+      if (p <= 0 || p >= 1) continue;
+      const x = sx + (ex + k.dx - sx) * p;
+      const y = sy + (ey - sy) * p - Math.sin(p * Math.PI) * 70;
+      ctx.fillStyle = C.gold2;
+      ctx.beginPath();
+      ctx.arc(x, y, 6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    text(ctx, `${(user?.name || 'You')} throws popcorn!`, W / 2, 286, { size: 16, bold: true, align: 'center', color: C.text });
+  });
+}

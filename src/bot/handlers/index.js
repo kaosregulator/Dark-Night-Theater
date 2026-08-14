@@ -2,6 +2,7 @@ import { log } from '../../logger.js';
 import { handleWatchCommand, handleWatchPick, handleWatchParty, handleWatchPrivate, handleWatchBack } from './watch.js';
 import { handleTheaterCommand, handleControlButton } from './theater.js';
 import { handlePreshow } from './preshow.js';
+import { handleJoinCommand, handleJoin } from './join.js';
 import { handleSettingsCommand, handleSettingsComponent } from './settings.js';
 import { handleLibraryCommand } from './library.js';
 
@@ -13,6 +14,8 @@ export async function routeInteraction(interaction) {
       switch (interaction.commandName) {
         case 'watch':
           return await handleWatchCommand(interaction);
+        case 'join':
+          return await handleJoinCommand(interaction);
         case 'theater':
           return await handleTheaterCommand(interaction);
         case 'theater-settings':
@@ -28,6 +31,7 @@ export async function routeInteraction(interaction) {
     if (interaction.isStringSelectMenu() || interaction.isRoleSelectMenu()) {
       const id = interaction.customId;
       if (id === 'w:pick') return await handleWatchPick(interaction);
+      if (id.startsWith('join:')) return await handleJoin(interaction);
       if (id.startsWith('set:')) return await handleSettingsComponent(interaction);
       return;
     }
@@ -40,6 +44,8 @@ export async function routeInteraction(interaction) {
       if (id === 'w:back') return await handleWatchBack(interaction);
       // Gamified pre-show — one public, owner-gated, self-deleting message.
       if (id.startsWith('ps:')) return await handlePreshow(interaction);
+      // /join audience flow (theater card, concessions, seat, throw, watch).
+      if (id.startsWith('join:')) return await handleJoin(interaction);
       if (id.startsWith('t:ctl:')) {
         const [, , action, channelId] = id.split(':');
         return await handleControlButton(interaction, action, channelId);

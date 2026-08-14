@@ -18,6 +18,10 @@ export const commands = [
     ),
 
   new SlashCommandBuilder()
+    .setName('join')
+    .setDescription('Join an active movie party — pick your seat & snacks, then enter the Theater.'),
+
+  new SlashCommandBuilder()
     .setName('theater')
     .setDescription('Open the Home Theater in your current voice channel and post live controls.'),
 
