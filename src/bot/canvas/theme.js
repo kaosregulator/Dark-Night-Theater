@@ -1,5 +1,10 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { GlobalFonts, loadImage } from '@napi-rs/canvas';
 import { log } from '../../logger.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const BUNDLED = path.resolve(__dirname, '../../../assets/fonts'); // shipped in the repo
 
 // Shared palette, font registration, and low-level drawing primitives for the
 // in-Discord Canvas cards. We draw icons as vector shapes (not emoji) so nothing
@@ -25,6 +30,8 @@ let FONT = 'DNSans';
 let FONT_BOLD = 'DNSansBold';
 (function registerFonts() {
   const candidates = [
+    // Bundled with the repo — guarantees text renders on Replit/Railway/etc.
+    [path.join(BUNDLED, 'DejaVuSans.ttf'), path.join(BUNDLED, 'DejaVuSans-Bold.ttf')],
     ['/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'],
     ['/usr/share/fonts/TTF/DejaVuSans.ttf', '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf'],
     ['/usr/share/fonts/dejavu/DejaVuSans.ttf', '/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf'],
