@@ -210,11 +210,15 @@ export class TheaterUI {
       empty.classList.remove('hidden');
     }
 
-    // Temp-session upload feed notice (only relevant to the shared clan movie).
+    // Temp-session upload feed notice (only for the shared clan movie). Your
+    // position and buffered video are kept; it resumes when the host reconnects.
     const note = this.root.querySelector('#feed-note');
     if (note) {
-      if (this.mode !== 'private' && p.feedStatus === 'stalled') {
-        note.textContent = '⏳ Waiting for the host’s upload… keep the host’s browser tab open.';
+      if (this.mode !== 'private' && p.feedStatus === 'disconnected') {
+        note.textContent = '⚠️ Host connection lost — waiting for the host…';
+        note.classList.remove('hidden');
+      } else if (this.mode !== 'private' && p.feedStatus === 'stalled') {
+        note.textContent = '⏳ Buffering — waiting for the host’s upload…';
         note.classList.remove('hidden');
       } else {
         note.classList.add('hidden');

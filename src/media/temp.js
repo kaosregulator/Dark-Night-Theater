@@ -63,6 +63,8 @@ export function create({ channelId, name, size, addedBy }) {
     total: Number(size) || 0, // declared final size (from the browser's File.size)
     receivedBytes: 0,
     complete: false,
+    connected: false, // is a host upload actively feeding right now?
+    everConnected: false,
     feedStatus: 'streaming',
     webPlayable: !NON_WEB.has(ext),
     kind: ext === '.m3u8' ? 'hls' : 'file',
@@ -80,9 +82,26 @@ export function find(id) {
   return byId.get(id) || null;
 }
 
-// Open the write stream the upload route pipes into.
-export function openWrite(session) {
-  return fs.createWriteStream(session.file, { flags: 'w' });
+// Open the write stream the upload route pipes into. `append` resumes an
+// interrupted upload from where it left off (flags 'a') instead of truncating.
+export function openWrite(session, { append = false } = {}) {
+  return fs.createWriteStream(session.file, { flags: append ? 'a' : 'w' });
+}
+
+// A host upload is actively feeding this session.
+export function markConnected(session) {
+  session.connected = true;
+  session.everConnected = true;
+  session.lastActivity = now();
+  if (!session.complete) setStatus(session, 'streaming');
+}
+
+// The host upload dropped (tab closed / network lost) before completing. Keep
+// the file + buffered bytes + room state intact so viewers keep their position
+// and can resume when the host reconnects.
+export function markDisconnected(session) {
+  session.connected = false;
+  if (!session.complete) setStatus(session, 'disconnected');
 }
 
 // Push a feed status to the party's viewers (only when it changes).
@@ -173,11 +192,18 @@ sessionBus.on('update', (payload) => {
   if (payload?.event?.type === 'ended' && payload.channelId) scrubByChannel(payload.channelId);
 });
 
-// Stall detector: if an incomplete upload goes quiet, tell viewers it's waiting.
+// Feed watcher: distinguish a dropped host connection from a soft stall.
+//  • not connected (and it either connected before or has waited past STALL) => disconnected
+//  • connected but no new bytes for STALL_MS                                   => stalled
 setInterval(() => {
   const t = now();
   for (const s of byId.values()) {
-    if (!s.complete && t - s.lastActivity > STALL_MS) setStatus(s, 'stalled');
+    if (s.complete) continue;
+    if (!s.connected) {
+      if (s.everConnected || t - s.createdAt > STALL_MS) setStatus(s, 'disconnected');
+    } else if (t - s.lastActivity > STALL_MS) {
+      setStatus(s, 'stalled');
+    }
   }
 }, 2000).unref?.();
 

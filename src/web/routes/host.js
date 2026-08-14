@@ -157,8 +157,19 @@ host.post('/api/host/session', express.json(), async (req, res) => {
   }
 });
 
+// Where a resumable upload should continue from (the host page polls this after
+// a connection hiccup, then re-PUTs the remainder with ?offset=).
+host.get('/api/host/session/:id/offset', (req, res) => {
+  const s = sessionFrom(req);
+  if (!s) return res.status(401).json({ error: 'Not authorised' });
+  const session = temp.find(req.params.id);
+  if (!session) return res.json({ exists: false });
+  res.json({ exists: true, receivedBytes: session.receivedBytes, complete: session.complete });
+});
+
 // Step 2: stream the file bytes into the temp session (long-running). The range
-// route serves what has arrived so far while this is in flight.
+// route serves what has arrived so far while this is in flight. Supports resume:
+// ?offset=<bytes> appends from that point (must equal what we already have).
 host.put('/api/host/session/:id/data', (req, res) => {
   const s = sessionFrom(req);
   if (!s) return res.status(401).json({ error: 'Not authorised' });
@@ -167,9 +178,20 @@ host.put('/api/host/session/:id/data', (req, res) => {
   if (session.channelId && s.voiceChannelId && session.channelId !== s.voiceChannelId) {
     return res.status(403).json({ error: 'Wrong channel' });
   }
+
+  const offset = parseInt(req.query.offset, 10) || 0;
+  if (offset !== session.receivedBytes) {
+    // Client is out of sync — tell it where we actually are so it can resume.
+    return res.status(409).json({ error: 'offset-mismatch', receivedBytes: session.receivedBytes });
+  }
+  const append = offset > 0;
+  if (!append) session.receivedBytes = 0;
+
   const maxBytes = config.media.maxUploadMb * 1024 * 1024;
-  const ws = temp.openWrite(session);
+  const ws = temp.openWrite(session, { append });
+  temp.markConnected(session);
   let aborted = false;
+  let ended = false;
 
   req.on('data', (chunk) => {
     if (aborted) return;
@@ -191,16 +213,27 @@ host.put('/api/host/session/:id/data', (req, res) => {
   });
   req.on('end', () => {
     if (aborted) return;
+    ended = true;
     ws.end(() => {
       temp.finish(session);
       if (!res.headersSent) res.json({ ok: true, bytes: session.receivedBytes });
     });
   });
+  // Host tab closed / network dropped before finishing — preserve everything,
+  // just flag the feed so viewers see a notice and the host can resume.
+  req.on('close', () => {
+    if (ended || aborted) return;
+    ws.end(() => {});
+    temp.markDisconnected(session);
+  });
   req.on('error', () => {
-    if (!aborted) ws.destroy();
+    if (!aborted && !ended) {
+      ws.destroy();
+      temp.markDisconnected(session);
+    }
   });
   ws.on('error', (err) => {
-    if (aborted) return;
+    if (aborted || ended) return;
     aborted = true;
     log.warn('temp write:', err.message);
     if (!res.headersSent) res.status(500).json({ error: 'Write failed' });
@@ -276,7 +309,10 @@ function adminUpload(f){
   setStatus('Uploading '+f.name+'…'); xhr.send(f);
 }
 // Session mode: create a TEMPORARY party file, start the party immediately, then
-// stream the file up in the background so viewers watch as it uploads.
+// stream the file up in the background so viewers watch as it uploads. The upload
+// is resumable — a network hiccup auto-continues from the server's offset without
+// restarting the movie.
+var SID=null, FILE=null, hostMsg='', retries=0;
 async function hostSession(f){
   setStatus('Setting up your theater…');
   let meta={};
@@ -285,15 +321,34 @@ async function hostSession(f){
       body:JSON.stringify({s:S,name:f.name,size:f.size,category:$('#cat').value||'Now Playing'})}).then(r=>r.json());
   }catch{ setStatus('⚠️ Could not reach the bot.'); return; }
   if(!meta.ok){ setStatus('⚠️ '+(meta.message||meta.error||'Could not start the party')); return; }
-  let html='🎉 <b>Party started</b> — “'+meta.name+'”! Open the Theater in your voice channel. <b>Keep this tab open</b> while it streams — closing it stops playback for everyone.';
-  if(meta.activityUrl) html+='<br><a class="open" href="'+meta.activityUrl+'" target="_blank" rel="noopener">▶ Open Theater</a>';
-  if(meta.webPlayable===false) html+='<br><small>⚠️ This file may not play in browsers — MP4/WebM recommended.</small>';
-  setStatus(html);
-  const xhr=new XMLHttpRequest(); xhr.open('PUT','/api/host/session/'+meta.sessionId+'/data?s='+encodeURIComponent(S));
+  SID=meta.sessionId; FILE=f; retries=0;
+  hostMsg='🎉 <b>Party started</b> — “'+meta.name+'”! Open the Theater in your voice channel. <b>Keep this tab open</b> while it streams — closing it pauses playback until you reopen it.';
+  if(meta.activityUrl) hostMsg+='<br><a class="open" href="'+meta.activityUrl+'" target="_blank" rel="noopener">▶ Open Theater</a>';
+  if(meta.webPlayable===false) hostMsg+='<br><small>⚠️ This file may not play in browsers — MP4/WebM recommended.</small>';
+  setStatus(hostMsg);
   $('#barwrap').style.display='block';
-  xhr.upload.onprogress=e=>{ if(e.lengthComputable) $('#bar').style.width=(e.loaded/e.total*100)+'%'; };
-  xhr.onerror=()=>{ /* partial upload still plays up to what arrived */ };
-  xhr.send(f);
+  streamFrom(0);
+}
+function streamFrom(offset){
+  const xhr=new XMLHttpRequest();
+  xhr.open('PUT','/api/host/session/'+SID+'/data?s='+encodeURIComponent(S)+'&offset='+offset);
+  xhr.upload.onprogress=e=>{ if(e.lengthComputable){ retries=0; $('#bar').style.width=((offset+e.loaded)/FILE.size*100)+'%'; } };
+  xhr.onload=()=>{ if(xhr.status>=200 && xhr.status<300){ $('#bar').style.width='100%'; setStatus(hostMsg+'<br><small>✅ Fully uploaded.</small>'); } else { resumeSoon(); } };
+  xhr.onerror=()=>resumeSoon();
+  xhr.onabort=()=>resumeSoon();
+  xhr.send(FILE.slice(offset));
+}
+function resumeSoon(){
+  if(++retries>30){ setStatus(hostMsg+'<br><small>⚠️ Upload stopped. Pick the file again to resume.</small>'); return; }
+  setStatus(hostMsg+'<br><small>⚠️ Connection hiccup — resuming upload…</small>');
+  setTimeout(async ()=>{
+    try{
+      const r=await fetch('/api/host/session/'+SID+'/offset?s='+encodeURIComponent(S)).then(x=>x.json());
+      if(!r.exists){ setStatus('The party has ended.'); return; }
+      if(r.complete){ $('#bar').style.width='100%'; setStatus(hostMsg+'<br><small>✅ Fully uploaded.</small>'); return; }
+      streamFrom(r.receivedBytes);
+    }catch{ resumeSoon(); }
+  }, 1500);
 }
 async function refresh(){
   const key=(keyEl.value||'').trim(); if(!key)return;
