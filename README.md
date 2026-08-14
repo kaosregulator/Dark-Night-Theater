@@ -133,3 +133,14 @@ Software provided **"AS IS", without warranty**. Full terms:
   enforced **on the server**.
 
 See **[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)** for a deeper tour.
+
+---
+
+## Add it to an existing bot
+
+Already have a bot? You can bolt this on without overwriting it. If your bot is
+**Node.js + discord.js v14**, use the plugin API (`attachTheater` +
+`mountTheaterWeb`) to add `/watch`, `/join`, the Activity, and streaming to your
+existing client and Express app — your commands keep working. For any other bot
+(e.g. discord.py) run it as a companion service. Full guide, examples, and the
+honest limits: **[ADDON.md](./ADDON.md)**.

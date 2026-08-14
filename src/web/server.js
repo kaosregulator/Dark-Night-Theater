@@ -15,17 +15,17 @@ import { attachWebSocket } from './ws.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, '../../dist/public');
 
-export function startWebServer() {
-  const app = express();
+// Mount all Theater HTTP routes onto an Express app. Reused by the standalone
+// server AND by the add-on plugin (mountTheaterWeb). Set serveActivity=false to
+// skip the static Activity + catch-all when embedding into an app that already
+// owns its root routes (then serve the built Activity yourself / on a subdomain).
+export function mountTheater(app, { serveActivity = true } = {}) {
   app.disable('x-powered-by');
 
   // Discord embeds the Activity in an iframe; allow it and its CDNs.
   app.use((req, res, next) => {
     res.setHeader('X-Frame-Options', 'ALLOWALL');
-    res.setHeader(
-      'Content-Security-Policy',
-      "frame-ancestors https://*.discord.com https://*.discordsays.com;"
-    );
+    res.setHeader('Content-Security-Policy', 'frame-ancestors https://*.discord.com https://*.discordsays.com;');
     next();
   });
 
@@ -40,21 +40,22 @@ export function startWebServer() {
 
   app.use('/api', api);
 
-  // Serve the built Activity if it exists.
   const built = fs.existsSync(path.join(PUBLIC_DIR, 'index.html'));
-  if (built) {
-    app.use(express.static(PUBLIC_DIR));
+  if (serveActivity) {
+    if (built) app.use(express.static(PUBLIC_DIR));
+    // Root: the built Activity, or a helpful setup page before `npm run build`.
+    app.get('*', (req, res) => {
+      if (built) return res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
+      res.setHeader('Content-Type', 'text/html');
+      res.end(setupPage());
+    });
   }
+  return app;
+}
 
-  // Root: the built Activity, or a helpful setup page before `npm run build`.
-  app.get('*', (req, res) => {
-    if (built) {
-      return res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
-    }
-    res.setHeader('Content-Type', 'text/html');
-    res.end(setupPage());
-  });
-
+export function startWebServer() {
+  const app = express();
+  mountTheater(app);
   const server = http.createServer(app);
   attachWebSocket(server);
   server.listen(config.app.port, () => {
