@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events';
 import { config } from '../config.js';
 import { MIME, NON_WEB } from './store.js';
 import { signMediaToken } from './token.js';
-import { bus as sessionBus } from '../services/sessions.js';
+import { bus as sessionBus, setFeedStatus } from '../services/sessions.js';
 import { log } from '../logger.js';
 
 // ============================================================================
@@ -22,6 +22,7 @@ import { log } from '../logger.js';
 
 const TMP_DIR = path.join(config.media.dir, '.sessions');
 const IDLE_MS = 30 * 60 * 1000; // scrub after 30 min with no activity
+const STALL_MS = 6000; // no new bytes for this long (and not done) => "stalled"
 const MAX_CHUNK = 4 * 1024 * 1024;
 
 const byId = new Map(); // id -> session
@@ -62,6 +63,7 @@ export function create({ channelId, name, size, addedBy }) {
     total: Number(size) || 0, // declared final size (from the browser's File.size)
     receivedBytes: 0,
     complete: false,
+    feedStatus: 'streaming',
     webPlayable: !NON_WEB.has(ext),
     kind: ext === '.m3u8' ? 'hls' : 'file',
     createdAt: now(),
@@ -83,11 +85,19 @@ export function openWrite(session) {
   return fs.createWriteStream(session.file, { flags: 'w' });
 }
 
+// Push a feed status to the party's viewers (only when it changes).
+function setStatus(session, status) {
+  if (session.feedStatus === status) return;
+  session.feedStatus = status;
+  if (session.channelId) setFeedStatus(session.channelId, status);
+}
+
 // Advance the durably-written byte count (called from the write callback so we
 // never advertise bytes a reader can't yet see).
 export function advance(session, n) {
   session.receivedBytes += n;
   session.lastActivity = now();
+  if (!session.complete) setStatus(session, 'streaming');
   session.emitter.emit('progress');
 }
 
@@ -99,6 +109,7 @@ export function finish(session) {
     /* keep declared total */
   }
   session.lastActivity = now();
+  setStatus(session, 'complete');
   session.emitter.emit('progress');
 }
 
@@ -161,6 +172,14 @@ export function scrubByChannel(channelId) {
 sessionBus.on('update', (payload) => {
   if (payload?.event?.type === 'ended' && payload.channelId) scrubByChannel(payload.channelId);
 });
+
+// Stall detector: if an incomplete upload goes quiet, tell viewers it's waiting.
+setInterval(() => {
+  const t = now();
+  for (const s of byId.values()) {
+    if (!s.complete && t - s.lastActivity > STALL_MS) setStatus(s, 'stalled');
+  }
+}, 2000).unref?.();
 
 // Idle / TTL sweeper.
 const ttlMs = () => config.media.sessionTtl * 1000;

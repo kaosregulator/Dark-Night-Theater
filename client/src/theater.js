@@ -65,6 +65,7 @@ export class TheaterUI {
             <div class="tap hidden" id="tap-to-play">▶ Tap to start</div>
           </div>
           <div class="now-playing" id="now-playing"></div>
+          <div class="feed-note hidden" id="feed-note"></div>
         </section>
 
         <section class="controls" id="controls"></section>
@@ -207,6 +208,17 @@ export class TheaterUI {
     } else if (this.mode !== 'private') {
       np.innerHTML = '';
       empty.classList.remove('hidden');
+    }
+
+    // Temp-session upload feed notice (only relevant to the shared clan movie).
+    const note = this.root.querySelector('#feed-note');
+    if (note) {
+      if (this.mode !== 'private' && p.feedStatus === 'stalled') {
+        note.textContent = '⏳ Waiting for the host’s upload… keep the host’s browser tab open.';
+        note.classList.remove('hidden');
+      } else {
+        note.classList.add('hidden');
+      }
     }
 
     // Controls availability.

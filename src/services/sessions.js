@@ -27,6 +27,7 @@ function emptyPlayback() {
     videoName: null,
     src: null, // local /media URL (or HLS manifest)
     kind: null, // 'file' | 'hls'
+    feedStatus: null, // temp-session upload feed: 'streaming' | 'stalled' | 'complete'
     hls: null,
     dash: null,
     playing: false,
@@ -145,6 +146,15 @@ export function isHost(channelId, userId) {
 
 export function setControlMessage(channelId, ref) {
   getRoom(channelId).controlMessage = ref;
+}
+
+// Update the temp-session upload feed status ('streaming'|'stalled'|'complete')
+// so the Theater can tell viewers when it's waiting on the host's upload.
+export function setFeedStatus(channelId, status) {
+  const room = rooms.get(channelId);
+  if (!room || room.playback.feedStatus === status) return;
+  room.playback.feedStatus = status;
+  broadcast(room);
 }
 
 // Load a movie into the clan session and start it.
