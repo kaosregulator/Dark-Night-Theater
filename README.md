@@ -54,10 +54,13 @@ in a browser — remux them to MP4 first. The `/host` page flags non-playable fi
   join/leave notices, **🍿 popcorn / 🥤 soda / 🍫 candy** social actions.
 - **1hr+ videos** via HTTP range streaming from your files.
 - **Per-server settings** (`/theater-settings`) — every guild has its own config.
-- **Add movies from your device — right inside `/watch`.** A **📤 Host a Movie**
-  button opens a one-tap, pre-authorised uploader (no key, already knows your
-  server + voice channel); pick a file and it uploads and **starts the party**
-  for you. (Also available directly at `<your-url>/host`.)
+- **Host a movie from your device — temporary, streams as it uploads.** The
+  **📤 Host a Movie** button in `/watch` opens a one-tap, pre-authorised uploader
+  (no key; knows your server + voice channel). Pick a file → the party **starts
+  immediately** and the movie **streams to viewers while it's still uploading**
+  (range requests + seeking, 1–3hr+). Your **original file never leaves your
+  device**; the server keeps only a **temporary per-party copy that's auto-scrubbed**
+  when the party ends, on inactivity, or on restart. **No permanent library.**
 - **Responsive** — one build for Desktop, Browser, and Mobile.
 
 ---

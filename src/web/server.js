@@ -7,7 +7,9 @@ import { config, missingSecrets } from '../config.js';
 import { log } from '../logger.js';
 import { api } from './routes/api.js';
 import { media } from './routes/media.js';
+import { tmedia } from './routes/tmedia.js';
 import { host, hostPage } from './routes/host.js';
+import { scrubAllOnBoot } from '../media/temp.js';
 import { attachWebSocket } from './ws.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -29,6 +31,9 @@ export function startWebServer() {
 
   // Local movie streaming (HTTP range) — same-origin as the Activity.
   app.use('/media', media);
+  // Temporary per-party session streaming (progressive, auto-scrubbed).
+  scrubAllOnBoot();
+  app.use('/tmedia', tmedia);
   // Host uploader API (mounted before /api so its raw upload body isn't parsed).
   app.use(host);
   app.get('/host', (req, res) => res.type('html').send(hostPage()));

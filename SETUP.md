@@ -92,10 +92,14 @@ That's all — movies are served from the same host, so there's nothing else to 
 
 Three ways, use whichever:
 
-- **From inside `/watch` (easiest):** run `/watch` in a voice channel and tap
-  **📤 Host a Movie (from my device)**. It opens a one-tap uploader (no key —
-  it already knows your server + voice channel); pick a file and it uploads and
-  **starts the watch party** automatically. Shown to hosts/admins only.
+- **From inside `/watch` (easiest, temporary):** run `/watch` in a voice channel
+  and tap **📤 Host a Movie (from my device)**. It opens a one-tap uploader (no
+  key — it already knows your server + voice channel); pick a file and the party
+  **starts immediately and streams while it uploads**. The server copy is
+  **temporary** and auto-deleted when the party ends. **Keep the host tab open**
+  while watching — it's feeding the stream. For smooth *watch-while-uploading*,
+  use **WebM** or **faststart MP4** (moov atom at the front); a normal MP4 still
+  plays but may need more of the file before it starts. Shown to hosts/admins.
 - **Upload page directly:** open `https://<PUBLIC_BASE_URL>/host`, enter your
   admin key, and **drag in** a movie. It appears in `/watch` right away.
 - **Drop files in the folder:** put files in the `media/` folder (or wherever

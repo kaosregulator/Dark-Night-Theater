@@ -13,7 +13,9 @@ src/
 ├─ logger.js             Tiny leveled logger.
 ├─ media/
 │  ├─ store.js           Local movie host: registry + folder scan + signed /media URLs.
-│  └─ token.js           HMAC signer/verifier for short-lived playback URLs.
+│  ├─ temp.js            Temporary per-party session files: progressive writes,
+│  │                     wait-for-bytes, auto-scrub (party end / idle / TTL / boot).
+│  └─ token.js           HMAC signer/verifier for short-lived playback URLs + host sessions.
 ├─ services/
 │  ├─ json-store.js      Debounced JSON persistence (swap for a DB later).
 │  ├─ settings-store.js  Per-guild settings (defaults + overrides).
@@ -26,7 +28,9 @@ src/
 │  └─ routes/
 │     ├─ api.js          /token /config /library /playback /session /private /settings.
 │     ├─ media.js        GET/HEAD /media/:id — HTTP range streaming of local files.
-│     └─ host.js         /host uploader page + /api/host/* (list/upload/delete).
+│     ├─ tmedia.js       GET/HEAD /tmedia/:id — progressive range streaming of a
+│     │                  temp session (serves bytes as they upload; waits on seek-ahead).
+│     └─ host.js         /host page + /api/host/* (permanent upload + temp session start/stream).
 └─ bot/
    ├─ client.js          discord.js client + interaction wiring.
    ├─ commands.js        Slash command definitions.
@@ -69,11 +73,19 @@ just in the UI.
 
 ## Movie source
 
-Movies are local files under `MEDIA_DIR`. `media/store.js` keeps a small JSON
-registry (added via folder scan or the `/host` uploader). `media.js` streams a
-file with HTTP **range** support (206 Partial Content), which is what makes
-seeking, late joiners, and 1hr+ playback work. Everything is **same-origin** with
-the Activity, so there's no external host to proxy or map.
+Two sources, both local & same-origin (no external host to proxy or map):
+
+- **Temporary per-party sessions (the `/watch` → Host a Movie flow).** The host's
+  browser streams their chosen file to the server (`media/temp.js`); the party
+  starts immediately and `tmedia.js` serves the file with **range** support *while
+  it's still uploading* — seek-behind is instant, seek-ahead briefly waits for
+  bytes. The original stays on the host's device and the server copy is **scrubbed**
+  when the party ends, after ~30 min idle, on TTL, or on boot. No permanent storage.
+- **Permanent folder library (optional).** Files placed in `MEDIA_DIR` (or uploaded
+  in `/host` admin mode) are registered by `media/store.js` and served by `media.js`.
+
+Both use HTTP 206 Partial Content, which is what makes seeking, late joiners, and
+1–3hr+ playback work.
 
 ## Security boundary
 

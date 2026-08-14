@@ -33,6 +33,9 @@ export const config = {
     dir: path.resolve(process.cwd(), str('MEDIA_DIR', 'media')),
     maxUploadMb: int('MAX_UPLOAD_MB', 8192),
     tokenTtl: int('MEDIA_TOKEN_TTL', 86400), // playback URLs valid 24h by default
+    // Temporary per-party session files are scrubbed after this age, or after
+    // ~30 min of inactivity, or when the party ends — whichever comes first.
+    sessionTtl: int('SESSION_TTL_SECONDS', 21600), // 6h (covers a 3h+ movie)
     // Key that protects the /host upload page. Falls back to SESSION_SECRET.
     get adminKey() {
       return str('HOST_ADMIN_KEY') || config.app.sessionSecret;

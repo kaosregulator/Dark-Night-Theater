@@ -5,6 +5,7 @@ import { config } from '../../config.js';
 import * as store from '../../media/store.js';
 import { VIDEO_EXTS, NON_WEB, ensureDir } from '../../media/store.js';
 import { getPlayback } from '../../media/store.js';
+import * as temp from '../../media/temp.js';
 import { verifyHostSession } from '../../media/token.js';
 import * as sessions from '../../services/sessions.js';
 import { getDiscordClient } from '../../bot/clientRef.js';
@@ -126,6 +127,86 @@ host.post('/api/host/start', express.json(), async (req, res) => {
   }
 });
 
+// ---- Temporary per-party session (hybrid host) -----------------------------
+// Step 1: create a temp session for this voice channel and START the party
+// immediately (pointing playback at the temp file), so viewers can join before
+// the upload finishes. Returns the session id to stream into.
+host.post('/api/host/session', express.json(), async (req, res) => {
+  const s = sessionFrom(req);
+  if (!s) return res.status(401).json({ error: 'Session expired — re-open “Host a Movie” from /watch.' });
+  if (!s.voiceChannelId) {
+    return res.status(400).json({ error: 'no-voice', message: 'Join a voice channel, then re-open “Host a Movie” from /watch.' });
+  }
+  const client = getDiscordClient();
+  if (!client) return res.status(503).json({ error: 'Bot is offline — try again in a moment.' });
+
+  const session = temp.create({ channelId: s.voiceChannelId, name: req.body?.name, size: req.body?.size, addedBy: s.userId });
+  try {
+    const playback = temp.getPlayback(session);
+    const video = { uid: session.id, name: req.body?.title ? String(req.body.title) : session.name, category: req.body?.category || 'Now Playing' };
+    sessions.startClanMovie(s.voiceChannelId, { hostId: s.userId, guildId: s.guildId, video, playback });
+    const voice = await client.channels.fetch(s.voiceChannelId).catch(() => null);
+    const text = s.textChannelId ? await client.channels.fetch(s.textChannelId).catch(() => null) : null;
+    const activityUrl = voice ? await createActivityInvite(voice) : null;
+    if (text) await publishPanel(text, s.voiceChannelId, activityUrl);
+    res.json({ ok: true, sessionId: session.id, name: session.name, activityUrl, webPlayable: session.webPlayable });
+  } catch (err) {
+    temp.scrub(session.id);
+    log.warn('host session start:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Step 2: stream the file bytes into the temp session (long-running). The range
+// route serves what has arrived so far while this is in flight.
+host.put('/api/host/session/:id/data', (req, res) => {
+  const s = sessionFrom(req);
+  if (!s) return res.status(401).json({ error: 'Not authorised' });
+  const session = temp.find(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  if (session.channelId && s.voiceChannelId && session.channelId !== s.voiceChannelId) {
+    return res.status(403).json({ error: 'Wrong channel' });
+  }
+  const maxBytes = config.media.maxUploadMb * 1024 * 1024;
+  const ws = temp.openWrite(session);
+  let aborted = false;
+
+  req.on('data', (chunk) => {
+    if (aborted) return;
+    if (session.receivedBytes + chunk.length > maxBytes) {
+      aborted = true;
+      req.destroy();
+      ws.destroy();
+      temp.scrub(session.id);
+      if (!res.headersSent) res.status(413).json({ error: `Too large (> ${config.media.maxUploadMb} MB).` });
+      return;
+    }
+    // Pause until the chunk is durably written, so the reader never sees bytes
+    // that aren't on disk yet, and we get natural backpressure.
+    req.pause();
+    ws.write(chunk, () => {
+      temp.advance(session, chunk.length);
+      req.resume();
+    });
+  });
+  req.on('end', () => {
+    if (aborted) return;
+    ws.end(() => {
+      temp.finish(session);
+      if (!res.headersSent) res.json({ ok: true, bytes: session.receivedBytes });
+    });
+  });
+  req.on('error', () => {
+    if (!aborted) ws.destroy();
+  });
+  ws.on('error', (err) => {
+    if (aborted) return;
+    aborted = true;
+    log.warn('temp write:', err.message);
+    if (!res.headersSent) res.status(500).json({ error: 'Write failed' });
+  });
+});
+
 // The uploader page — dependency-free. Works in two modes:
 //   admin mode  (no ?s)  : type key, manage library.
 //   session mode (?s=..) : opened from /watch; no key; auto-starts the party.
@@ -163,7 +244,7 @@ const keyEl=$('#key');
 if(S){ // session mode: opened from /watch — no key, auto-start the party
   $('#keywrap').style.display='none';
   $('#listwrap').style.display='none';
-  $('#mode').innerHTML='Pick a movie from this device — it’ll upload and <b>start the watch party</b> in your voice channel. Best: MP4 (H.264/AAC) or WebM.';
+  $('#mode').innerHTML='Pick a movie from this device — the party <b>starts right away</b> and it streams while it uploads. Your file stays on your device; the server copy is temporary and deleted when the party ends. <b>Keep this tab open</b> while watching. Best: MP4 (H.264/AAC) or WebM.';
 } else {
   keyEl.value=localStorage.getItem('dnkey')||'';
   keyEl.onchange=()=>{localStorage.setItem('dnkey',keyEl.value);refresh();};
@@ -178,32 +259,41 @@ file.onchange=()=>{if(file.files[0])upload(file.files[0]);};
 function auth(){ return S ? ('s='+encodeURIComponent(S)) : ('key='+encodeURIComponent((keyEl.value||'').trim())); }
 function setStatus(html){ $('#status').innerHTML='<small>'+html+'</small>'; }
 function upload(f){
-  if(!S && !(keyEl.value||'').trim()){ setStatus('Enter your admin key first.'); return; }
+  if(S) return hostSession(f); // temporary per-party session (streams while it plays)
+  if(!(keyEl.value||'').trim()){ setStatus('Enter your admin key first.'); return; }
+  adminUpload(f);
+}
+// Admin mode: permanent library upload (waits for the whole file).
+function adminUpload(f){
   const url='/api/host/upload?'+auth()+'&name='+encodeURIComponent(f.name)+'&category='+encodeURIComponent($('#cat').value||'Library');
   const xhr=new XMLHttpRequest(); xhr.open('PUT',url);
   $('#barwrap').style.display='block';
   xhr.upload.onprogress=e=>{if(e.lengthComputable)$('#bar').style.width=(e.loaded/e.total*100)+'%';};
-  xhr.onload=()=>{
-    let r={}; try{r=JSON.parse(xhr.responseText);}catch{}
-    $('#bar').style.width='0';
+  xhr.onload=()=>{ let r={}; try{r=JSON.parse(xhr.responseText);}catch{} $('#bar').style.width='0';
     if(!r.ok){ setStatus('⚠️ '+(r.error||'Upload failed')); return; }
-    if(S){ setStatus('✅ Uploaded — starting the party…'); startParty(r.video.uid); }
-    else { setStatus('✅ Added “'+r.video.name+'”.'); refresh(); }
-  };
+    setStatus('✅ Added “'+r.video.name+'”.'); refresh(); };
   xhr.onerror=()=>setStatus('⚠️ Network error');
-  setStatus('Uploading '+f.name+'…');
-  xhr.send(f);
+  setStatus('Uploading '+f.name+'…'); xhr.send(f);
 }
-async function startParty(uid){
+// Session mode: create a TEMPORARY party file, start the party immediately, then
+// stream the file up in the background so viewers watch as it uploads.
+async function hostSession(f){
+  setStatus('Setting up your theater…');
+  let meta={};
   try{
-    const r=await fetch('/api/host/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({s:S,uid})});
-    const j=await r.json();
-    if(j.ok){
-      let html='🎉 <b>Party started</b> for “'+j.name+'”! Head back to Discord and open the Theater in your voice channel.';
-      if(j.activityUrl) html+='<br><a class="open" href="'+j.activityUrl+'" target="_blank" rel="noopener">▶ Open Theater</a>';
-      setStatus(html);
-    } else { setStatus('⚠️ '+(j.message||j.error||'Could not start the party')); }
-  }catch{ setStatus('⚠️ Could not reach the bot to start the party.'); }
+    meta=await fetch('/api/host/session',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({s:S,name:f.name,size:f.size,category:$('#cat').value||'Now Playing'})}).then(r=>r.json());
+  }catch{ setStatus('⚠️ Could not reach the bot.'); return; }
+  if(!meta.ok){ setStatus('⚠️ '+(meta.message||meta.error||'Could not start the party')); return; }
+  let html='🎉 <b>Party started</b> — “'+meta.name+'”! Open the Theater in your voice channel. <b>Keep this tab open</b> while it streams — closing it stops playback for everyone.';
+  if(meta.activityUrl) html+='<br><a class="open" href="'+meta.activityUrl+'" target="_blank" rel="noopener">▶ Open Theater</a>';
+  if(meta.webPlayable===false) html+='<br><small>⚠️ This file may not play in browsers — MP4/WebM recommended.</small>';
+  setStatus(html);
+  const xhr=new XMLHttpRequest(); xhr.open('PUT','/api/host/session/'+meta.sessionId+'/data?s='+encodeURIComponent(S));
+  $('#barwrap').style.display='block';
+  xhr.upload.onprogress=e=>{ if(e.lengthComputable) $('#bar').style.width=(e.loaded/e.total*100)+'%'; };
+  xhr.onerror=()=>{ /* partial upload still plays up to what arrived */ };
+  xhr.send(f);
 }
 async function refresh(){
   const key=(keyEl.value||'').trim(); if(!key)return;
