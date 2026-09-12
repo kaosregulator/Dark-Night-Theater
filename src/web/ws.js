@@ -69,10 +69,22 @@ export function attachWebSocket(server) {
           break;
         }
 
-        case 'control':
+        case 'control': {
           // Host-only enforcement lives in sessions.control().
-          sessions.control(ws.channelId, uid, msg.action, msg.value);
+          const result = sessions.control(ws.channelId, uid, msg.action, msg.value);
+          if (!result.ok) send({ type: 'error', error: result.reason || 'Control rejected' });
           break;
+        }
+
+        case 'enter': {
+          // Foyer → seats: audience completed the in-Activity join ritual.
+          const result = sessions.enterTheater(ws.channelId, uid, {
+            seat: msg.seat,
+            items: msg.items,
+          });
+          if (!result.ok) send({ type: 'error', error: result.reason || 'Could not enter' });
+          break;
+        }
 
         case 'claim-host':
           // First person / owner grabbing host when none set.

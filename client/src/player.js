@@ -62,9 +62,18 @@ export class TheaterPlayer {
       });
     }
 
-    // Target position accounting for time elapsed since the server snapshot.
-    const elapsed = playback.playing ? (Date.now() - playback.serverTime) / 1000 : 0;
-    const target = (playback.livePosition ?? playback.positionAtUpdate) + elapsed * (playback.rate || 1);
+    // Prefer the true anchor (positionAtUpdate + updatedAt). Falling back to
+    // livePosition + serverTime keeps older snapshots working.
+    let target;
+    if (playback.playing && playback.updatedAt) {
+      const elapsed = (Date.now() - playback.updatedAt) / 1000;
+      target = (playback.positionAtUpdate ?? 0) + elapsed * (playback.rate || 1);
+    } else if (playback.playing && playback.serverTime != null) {
+      const elapsed = (Date.now() - playback.serverTime) / 1000;
+      target = (playback.livePosition ?? playback.positionAtUpdate ?? 0) + elapsed * (playback.rate || 1);
+    } else {
+      target = playback.livePosition ?? playback.positionAtUpdate ?? 0;
+    }
     const drift = this.video.currentTime - target;
 
     this.suppressEvents = true;
@@ -91,6 +100,19 @@ export class TheaterPlayer {
       this.video.pause();
     }
     setTimeout(() => (this.suppressEvents = false), 50);
+  }
+
+  // Stop and unload — used when the party ends or the viewer is still in the foyer.
+  clear() {
+    this._destroyHls();
+    this.currentUid = null;
+    try {
+      this.video.pause();
+    } catch {
+      /* ignore */
+    }
+    this.video.removeAttribute('src');
+    this.video.load?.();
   }
 
   // For PRIVATE viewing: free local control, no server sync.
