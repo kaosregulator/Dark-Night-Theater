@@ -10,7 +10,9 @@ import Hls from 'hls.js';
 
 const DRIFT_HARD = 2.0; // seconds -> hard seek
 const DRIFT_SOFT = 0.4; // seconds -> speed nudge
-const PAINT_WAIT_MS = 3200;
+const PAINT_WAIT_MS = 4500;
+const PAINT_MAX_TRIES = 4;
+const UNLOCK_FRAME_WAIT_MS = 8000;
 
 function withRevision(url, revision) {
   if (!url || revision == null) return url;
@@ -45,6 +47,8 @@ export class TheaterPlayer {
     this._hadMediaError = false;
     this._awaitingConversion = false;
     this._converting = false;
+    this._lastPlayback = null;
+    this._paintTries = 0;
 
     // Critical for Discord iframe / mobile WebViews.
     this.video.playsInline = true;
@@ -181,28 +185,73 @@ export class TheaterPlayer {
       clearTimeout(this._paintTimer);
       this._paintTimer = null;
     }
+    this._paintTries = 0;
   }
 
   _armPaintWatch() {
     this._clearPaintWatch();
+    this._paintTries = 0;
     this._paintTimer = setTimeout(() => this._checkPaint(), PAINT_WAIT_MS);
   }
 
   // Discord Chromium often "plays" HEVC / broken MP4s with the clock advancing
   // but videoWidth stays 0 → solid black screen. Surface that clearly.
+  // Also: Discord's media proxy is slow — do NOT treat "still buffering" as a
+  // fatal decode failure (that looped users back to the yellow ▶ button).
   _checkPaint() {
     this._paintTimer = null;
     if (!this.currentUid || this.video.paused) return;
-    const noFrames = !this.video.videoWidth || this.video.readyState < 2;
-    if (noFrames) {
-      this.onLocalControl({
-        type: 'decode-fail',
-        detail:
-          'Video is not painting frames. Discord Activities need MP4 H.264 + AAC (even resolution like 1920×1080). MovieBox / rip files are often H.265 — wait for server convert, or re-export.',
-      });
-    } else {
-      this.onLocalControl({ type: 'decode-ok' });
+    if (this._converting || this._awaitingConversion) return;
+
+    const v = this.video;
+    if (v.error) {
+      this._onMediaError();
+      return;
     }
+
+    const hasFrames = v.videoWidth > 0 && v.readyState >= 2;
+    if (hasFrames) {
+      this._paintTries = 0;
+      this.onLocalControl({ type: 'decode-ok' });
+      return;
+    }
+
+    const stillLoading =
+      v.networkState === 2 /* NETWORK_LOADING */ ||
+      v.readyState < 2 ||
+      bufferedEnd(v) < 0.5;
+
+    this._paintTries += 1;
+    if (stillLoading && this._paintTries < PAINT_MAX_TRIES) {
+      this._paintTimer = setTimeout(() => this._checkPaint(), PAINT_WAIT_MS);
+      this.onLocalControl({
+        type: 'converting',
+        detail: 'Buffering movie through Discord…',
+      });
+      return;
+    }
+
+    this.onLocalControl({
+      type: 'decode-fail',
+      detail:
+        'Video is not painting frames. Discord Activities need MP4 H.264 + AAC (even resolution like 1920×1080). MovieBox / rip files are often H.265 — wait for server convert, or re-export.',
+    });
+  }
+
+  _waitForEvent(eventName, timeoutMs) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (ok) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        this.video.removeEventListener(eventName, onEvt);
+        resolve(ok);
+      };
+      const onEvt = () => finish(true);
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      this.video.addEventListener(eventName, onEvt, { once: true });
+    });
   }
 
   _onMediaError() {
@@ -304,28 +353,63 @@ export class TheaterPlayer {
   // User tapped ▶ — must be called from a click handler.
   async unlockAndPlay({ unmute = true } = {}) {
     const v = this.video;
-    if (unmute) {
-      v.muted = false;
-      this._wantUnmute = false;
-    } else {
-      v.muted = true;
+
+    // Convert still running: do not pretend play() can succeed on an empty src.
+    if (this._converting || this._awaitingConversion) {
+      this.onLocalControl({
+        type: 'converting',
+        detail: 'Converting video for Discord… hang tight, then tap again.',
+      });
+      return false;
     }
-    try {
+
+    // After MEDIA_ERR / convert, the element may have no src — reload latest snapshot.
+    const needsReload =
+      !v.src ||
+      Boolean(v.error) ||
+      this._hadMediaError ||
+      (this._lastPlayback && this.mediaRevision !== (this._lastPlayback.mediaRevision ?? 0));
+    if (needsReload && this._lastPlayback) {
+      const pb = { ...this._lastPlayback, converting: false };
+      // Force leave same-media guard by clearing revision identity first.
+      this.mediaRevision = null;
+      this.currentUid = null;
+      this.applyState(pb);
+      await this._waitForEvent('loadeddata', 5000);
+    }
+
+    if (!v.src && !this.hls) {
+      this.onLocalControl({
+        type: 'decode-fail',
+        detail: 'No movie loaded yet. If the host just uploaded, wait for convert to finish, then tap again.',
+      });
+      return false;
+    }
+
+    // Discord: try muted first so play() is allowed, then unmute on gesture.
+    const tryPlay = async (wantUnmute) => {
+      v.muted = !wantUnmute;
+      this._wantUnmute = !wantUnmute;
       await v.play();
       this._started = true;
-      this._armPaintWatch();
-      return true;
-    } catch {
-      // Fall back to muted play so something paints, then ask for sound.
-      try {
-        v.muted = true;
-        this._wantUnmute = true;
-        await v.play();
-        this._started = true;
-        this._armPaintWatch();
+      if (wantUnmute) {
+        try {
+          v.muted = false;
+          this._wantUnmute = false;
+        } catch {
+          /* ignore */
+        }
+      } else {
         this.onLocalControl({ type: 'needs-unmute' });
-        return true;
-      } catch (err) {
+      }
+    };
+
+    try {
+      await tryPlay(Boolean(unmute));
+    } catch {
+      try {
+        await tryPlay(false);
+      } catch {
         this.onLocalControl({
           type: 'decode-fail',
           detail: 'Could not start playback. If the file is still converting, wait a bit and tap again.',
@@ -333,11 +417,42 @@ export class TheaterPlayer {
         return false;
       }
     }
+
+    // Wait for real frames — play() can resolve while Discord's proxy still
+    // buffers, which previously hid the yellow button over a black screen.
+    const start = Date.now();
+    while (Date.now() - start < UNLOCK_FRAME_WAIT_MS) {
+      if (v.error) {
+        this._onMediaError();
+        return false;
+      }
+      if (v.videoWidth > 0 && v.readyState >= 2) {
+        this._hadMediaError = false;
+        this.onLocalControl({ type: 'decode-ok' });
+        this._armPaintWatch();
+        return true;
+      }
+      await this._waitForEvent('loadeddata', 500);
+    }
+
+    // Still no frames — keep overlay up so the user can retry; arm a patient paint watch.
+    this._armPaintWatch();
+    if (v.error) {
+      this._onMediaError();
+      return false;
+    }
+    this.onLocalControl({
+      type: 'converting',
+      detail: 'Still buffering through Discord… tap again in a moment if the screen stays black.',
+    });
+    // Return true only if the element is actually playing; otherwise keep the ▶ button.
+    return !v.paused && v.readyState >= 2;
   }
 
   // Apply the authoritative shared state to this player.
   applyState(playback) {
     if (!playback?.videoUid) return;
+    this._lastPlayback = playback;
 
     this._converting = Boolean(playback.converting);
 
@@ -404,6 +519,7 @@ export class TheaterPlayer {
     this._clearPaintWatch();
     this.currentUid = null;
     this.mediaRevision = null;
+    this._lastPlayback = null;
     this._pendingSeek = null;
     this._started = false;
     this._hadMediaError = false;
