@@ -1,0 +1,7 @@
+{
+  "name": "canvas",
+  "version": "2.11.2",
+  "description": "Stub for gifencoder — it declares canvas but never require()s it. Drawing uses @napi-rs/canvas.",
+  "main": "index.js",
+  "license": "MIT"
+}

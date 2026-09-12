@@ -76,6 +76,27 @@ Open the URL. Missing something? The page (and `GET /api/status`) tells you.
 > reset on redeploy. For a large permanent library, run from a machine with real
 > disk (see [Running from your own PC](#running-from-your-own-pc)).
 
+#### `/emoji` on Railway (optional)
+`npm install` / deploy runs `scripts/fetch-emoji-offline.mjs`, which pulls the
+offline MakeEmoji pack (~380MB) from the public
+[DN-cards](https://github.com/kaosregulator/DN-cards) repo into
+`artifacts/emoji-offline/`. No Chromium / Playwright install is required — the
+offline renderer is the default.
+
+| Variable | When to set |
+| --- | --- |
+| *(none)* | Normal — pack fetched on install, `/emoji` works |
+| `EMOJI_SKIP_FETCH=1` | Skip the download (faster deploys if you mount assets yourself) |
+| `EMOJI_OFFLINE_PACKAGE_PATH` | Absolute path to a pre-baked pack (e.g. Railway volume) |
+| `EMOJI_DISABLE_OFFLINE=1` | Force the MakeEmoji browser path (needs Playwright + Chromium — not recommended on Railway) |
+| `RENDER_CONCURRENCY` / `EMOJI_BOARD_CONCURRENCY` | Tune board thumbnail parallelism (defaults 4) |
+
+Also run **`npm run register`** once after deploy so the `/emoji` slash command
+appears (same step as the other commands).
+
+Sharp + `@napi-rs/canvas` ship as prebuilt binaries — no extra apt packages
+beyond the existing `ffmpeg` in `nixpacks.toml`.
+
 ---
 
 ## 5. URL Mapping

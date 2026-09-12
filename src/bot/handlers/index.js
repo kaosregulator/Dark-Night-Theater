@@ -6,6 +6,10 @@ import { handlePreshow } from './preshow.js';
 import { handleJoinCommand, handleJoin } from './join.js';
 import { handleSettingsCommand, handleSettingsComponent } from './settings.js';
 import { handleLibraryCommand } from './library.js';
+import {
+  handleEmojiCommand,
+  handleEmojiInteraction,
+} from '../emoji/commands/emoji.js';
 
 // Central interaction router. Wired to the client's interactionCreate event.
 export async function routeInteraction(interaction) {
@@ -25,9 +29,20 @@ export async function routeInteraction(interaction) {
           return await handleSettingsCommand(interaction);
         case 'library':
           return await handleLibraryCommand(interaction);
+        case 'emoji':
+          return await handleEmojiCommand(interaction);
         default:
           return;
       }
+    }
+
+    // ---- /emoji dashboard (buttons, selects, modals, user/channel pickers) ----
+    if (
+      (interaction.isMessageComponent() || interaction.isModalSubmit()) &&
+      typeof interaction.customId === 'string' &&
+      interaction.customId.startsWith('emoji:')
+    ) {
+      return await handleEmojiInteraction(interaction);
     }
 
     // ---- Select menus ----

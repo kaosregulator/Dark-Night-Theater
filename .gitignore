@@ -10,3 +10,12 @@ media/*
 *.log
 .DS_Store
 .vite/
+
+# MakeEmoji offline pack (~380MB) — fetched by scripts/fetch-emoji-offline.mjs
+artifacts/emoji-offline/
+.tmp-dn-cards-emoji/
+
+# TypeScript sources for the ported /emoji module (runtime uses the .js build)
+src/bot/emoji/**/*.ts
+src/bot/animations/**/*.ts
+src/bot/search/**/*.ts

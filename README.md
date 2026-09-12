@@ -82,6 +82,8 @@ Then:
    files into the `media/` folder and run `/library sync`).
 2. In the Discord Developer Portal, set the Activity **URL mapping**: `/` → your host.
 3. Join a voice channel, `/watch`, pick a movie, start the party.
+4. Optional: `/emoji` opens the animated-emoji studio (offline MakeEmoji pack —
+   fetched on `npm install`; see SETUP.md for Railway notes).
 
 See **[SETUP.md](./SETUP.md)** for the full walkthrough. The app boots even before
 secrets are set — visit the URL and it lists what's missing.
