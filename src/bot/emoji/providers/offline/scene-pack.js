@@ -1,4 +1,5 @@
-import GIFEncoder from "gifencoder";
+import gifenc from "gifenc";
+const { GIFEncoder: GifEnc, quantize, applyPalette } = gifenc;
 import sharp from "sharp";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -63,43 +64,45 @@ function chromaKey(chroma) {
   if (chroma === "cyan") return (r, g, b) => isCyan(r, g, b) || isBlue(r, g, b) || isGreen(r, g, b);
   return isGreen;
 }
-const DEFAULT_INSET = 0.92;
+const DEFAULT_INSET = 1;
 const SCENE_OVERRIDES = {
   // Theater screen is only green for a beat — hold authored screen for the rest.
   theater: { fit: "stretch", hole: [0.09, 0.12, 0.81, 0.6], holeSeed: true },
-  // Small desk TV; green comes and goes / soft.
-  "professor-tv": { fit: "contain", hole: [0.62, 0.36, 0.26, 0.48], inset: 0.9, holeSeed: true },
-  // Genie portal: pure blue screen opens mid-clip. Green keys the character's
-  // skin (wrong). Authored hole matches the blue portal; live blue refines it.
-  "giant-portal": { chroma: "blue", fit: "contain", inset: 0.9, hole: [0.37, 0.15, 0.51, 0.71], holeSeed: true },
-  // Wanted poster card: green arrives late — seed the card rect.
-  "catch-me-card": { fit: "contain", hole: [0.3, 0.22, 0.32, 0.55], inset: 0.9 },
-  // Movie theater–style wide screens: contain so the whole face reads.
-  "mission-passed": { fit: "contain" },
-  explosion: { fit: "contain" },
-  "cutting-board": { fit: "contain" },
-  "breaking-bad": { fit: "contain" },
-  "dexter-locker": { fit: "contain" },
-  "toy-story-tv": { fit: "contain", inset: 0.9 },
-  "villain-tv": { fit: "contain", inset: 0.9 },
-  "rocket-paper": { fit: "contain" },
-  "rock-throw": { fit: "contain" },
-  "megamind-card": { fit: "contain", inset: 0.9 },
-  "megamind-card-2": { fit: "contain", inset: 0.9 },
-  "mario-movie": { fit: "contain" },
-  "control-room": { fit: "contain" },
-  "big-screen": { fit: "contain" },
-  "tiktok-hearing": { fit: "contain" },
-  "gta-office": { fit: "contain" },
-  "blue-card-kid": { fit: "contain", inset: 0.9 },
-  "surprised-cat": { fit: "contain" },
-  "baby-dog": { fit: "contain" },
-  "dancing-baby": { fit: "contain" },
-  chimp: { fit: "contain" }
+  // Small desk TV; green comes and goes / soft. Box-mask fills the glass.
+  "professor-tv": { fit: "stretch", hole: [0.64, 0.36, 0.22, 0.42], inset: 1, holeSeed: true },
+  // SpongeBob/Neptune portal: pure blue opens mid-clip. Do NOT seed early — a
+  // rectangular sticker over the clouds looks wrong. Appear when blue is live.
+  "giant-portal": { chroma: "blue", fit: "stretch", inset: 1, hole: [0.37, 0.15, 0.51, 0.71] },
+  // Wanted poster card: green arrives late — bridge after first live hit.
+  "catch-me-card": { fit: "stretch", hole: [0.3, 0.22, 0.32, 0.55], inset: 1 },
+  // CRT / screen glass — authored hole so stretch fills the whole screen (not
+  // just the keyed green patch, which left black bars inside the bezel).
+  "toy-story-tv": { fit: "stretch", hole: [0.12, 0.08, 0.68, 0.88], inset: 1, holeSeed: true },
+  "villain-tv": { fit: "stretch", hole: [0.06, 0.02, 0.84, 0.68], inset: 1, holeSeed: true },
+  "big-screen": { fit: "stretch", hole: [0.28, 0.06, 0.42, 0.62], inset: 1, holeSeed: true },
+  // Full-frame / card / meme scenes: stretch into the green, no letterbox.
+  "mission-passed": { fit: "stretch" },
+  explosion: { fit: "stretch" },
+  "cutting-board": { fit: "stretch" },
+  "breaking-bad": { fit: "stretch" },
+  "dexter-locker": { fit: "stretch" },
+  "rocket-paper": { fit: "stretch" },
+  "rock-throw": { fit: "stretch" },
+  "megamind-card": { fit: "stretch", inset: 1 },
+  "megamind-card-2": { fit: "stretch", inset: 1 },
+  "mario-movie": { fit: "stretch" },
+  "control-room": { fit: "stretch" },
+  "tiktok-hearing": { fit: "stretch" },
+  "gta-office": { fit: "stretch" },
+  "blue-card-kid": { fit: "stretch", inset: 1 },
+  "surprised-cat": { fit: "stretch" },
+  "baby-dog": { fit: "stretch" },
+  "dancing-baby": { fit: "stretch" },
+  chimp: { fit: "stretch" }
 };
 function applySceneOverrides(raw) {
   const o = SCENE_OVERRIDES[raw.id];
-  const fit = o?.fit ?? (raw.fit === "stretch" ? "stretch" : "contain");
+  const fit = o?.fit ?? "stretch";
   return { ...raw, ...o, fit };
 }
 function mulberry(seed) {
@@ -223,11 +226,14 @@ async function renderScene(image, id, opts = {}) {
     for (let i = 0; i < boxes.length; i++) {
       const b = boxes[i];
       const liveOk = !!(b && b.w * b.h >= authoredArea * 0.35 && b.w * b.h <= authoredArea * 1.6 && b.x + b.w * 0.5 >= hb.x && b.x + b.w * 0.5 <= hb.x + hb.w && b.y + b.h * 0.5 >= hb.y && b.y + b.h * 0.5 <= hb.y + hb.h);
-      if (liveOk) {
-        seenLive = true;
+      if (liveOk) seenLive = true;
+      if (cfg.holeSeed) {
+        boxes[i] = { ...hb };
+        quads[i] = { ...hq, tl: { ...hq.tl }, tr: { ...hq.tr }, br: { ...hq.br }, bl: { ...hq.bl } };
         continue;
       }
-      if (cfg.holeSeed || seenLive) {
+      if (liveOk) continue;
+      if (seenLive) {
         boxes[i] = { ...hb };
         quads[i] = { ...hq, tl: { ...hq.tl }, tr: { ...hq.tr }, br: { ...hq.br }, bl: { ...hq.bl } };
       }
@@ -278,7 +284,22 @@ async function renderScene(image, id, opts = {}) {
   }
   const holeFill = fillCnt > 0 ? fillSum / fillCnt : 1;
   const rectangular = holeFill >= 0.72;
-  const useWarp = rectangular && cfg.effect === "none" && cfg.fit !== "stretch" && !cfg.hole;
+  const useWarp = false;
+  for (let i = 0; i < smooth.length; i++) {
+    const b = smooth[i];
+    if (!b || b.absent) continue;
+    if (b.w * b.h < W * H2 * 0.72) continue;
+    smooth[i] = { x: 0, y: 0, w: W, h: H2, absent: false };
+    if (smoothQuads[i]) {
+      smoothQuads[i] = {
+        tl: { x: 0, y: 0 },
+        tr: { x: W, y: 0 },
+        br: { x: W, y: H2 },
+        bl: { x: 0, y: H2 },
+        absent: false
+      };
+    }
+  }
   let explodeStart = null;
   if (cfg.effect === "explode") {
     for (let k = 0; k < frames.length; k++) {
@@ -299,10 +320,8 @@ async function renderScene(image, id, opts = {}) {
       break;
     }
   }
-  const encoder = new GIFEncoder(W, H2);
-  encoder.start();
-  encoder.setRepeat(0);
-  encoder.setQuality(opts.quality ?? 10);
+  const gif = GifEnc();
+  const rgbaFrames = [];
   const canvas = mod.createCanvas(W, H2);
   const ctx = canvas.getContext("2d");
   const fgCanvas = mod.createCanvas(W, H2);
@@ -325,9 +344,9 @@ async function renderScene(image, id, opts = {}) {
       const layer = mod.createCanvas(W, H2);
       const lctx = layer.getContext("2d");
       lctx.clearRect(0, 0, W, H2);
-      const drawBox = box && !rectangular ? shrinkBoxToFill(box, holeFill) : box;
+      const drawBox = box && !rectangular && (cfg.fit || "stretch") !== "stretch" ? shrinkBoxToFill(box, holeFill) : box;
       if (useWarp && quad && !quad.absent) {
-        warpTargetToQuad(lctx, target, quad, cfg.fit || "contain", cfg.inset ?? DEFAULT_INSET);
+        warpTargetToQuad(lctx, target, quad, cfg.fit || "stretch", cfg.inset ?? DEFAULT_INSET);
       } else if (drawBox && !drawBox.absent) {
         drawTarget(mod, lctx, target, drawBox, cfg, f, frames.length, explodeStart, revealAt);
       }
@@ -350,7 +369,8 @@ async function renderScene(image, id, opts = {}) {
             if (x >= x0 && x < x1 && y >= y0 && y < y1) keyedInBox++;
           }
         }
-        const solidKey = keyedInBox >= boxArea * 0.45;
+        const forceBox = !!cfg.holeSeed || rectangular;
+        const solidKey = !forceBox && keyedInBox >= boxArea * 0.45;
         if (solidKey) {
           for (let i = 0; i < md.length; i += 4) {
             if (key(src2[i], src2[i + 1], src2[i + 2])) {
@@ -359,7 +379,7 @@ async function renderScene(image, id, opts = {}) {
             }
           }
         } else {
-          heldHole = keyed < W * H2 * 4e-3 || !!cfg.hole;
+          heldHole = forceBox || keyed < W * H2 * 4e-3;
           for (let y = y0; y < y1; y++) {
             for (let x = x0; x < x1; x++) {
               const i = (y * W + x) * 4;
@@ -389,11 +409,17 @@ async function renderScene(image, id, opts = {}) {
     fgctx.putImageData(fgId, 0, 0);
     ctx.globalAlpha = 1;
     ctx.drawImage(fgCanvas, 0, 0);
-    encoder.setDelay(frame.delay);
-    encoder.addFrame(ctx);
+    const rgba = ctx.getImageData(0, 0, W, H2).data;
+    rgbaFrames.push({ rgba: new Uint8ClampedArray(rgba), delay: frame.delay });
   }
-  encoder.finish();
-  return encoder.out.getData();
+  const probe = rgbaFrames[Math.floor(rgbaFrames.length / 2)]?.rgba ?? rgbaFrames[0].rgba;
+  const palette = quantize(probe, 256);
+  for (const fr of rgbaFrames) {
+    const index = applyPalette(fr.rgba, palette);
+    gif.writeFrame(index, W, H2, { palette, delay: fr.delay });
+  }
+  gif.finish();
+  return Buffer.from(gif.bytes());
 }
 function lerpPt(a, b, t) {
   return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
@@ -432,7 +458,7 @@ function affineFromTri(s, d) {
   const f = d0.y - b * s0.x - dd * s0.y;
   return [a, b, c, dd, e, f];
 }
-function warpTargetToQuad(ctx, target, q, fit = "contain", inset = DEFAULT_INSET) {
+function warpTargetToQuad(ctx, target, q, fit = "stretch", inset = DEFAULT_INSET) {
   const topW = Math.hypot(q.tr.x - q.tl.x, q.tr.y - q.tl.y);
   const botW = Math.hypot(q.br.x - q.bl.x, q.br.y - q.bl.y);
   const leftH = Math.hypot(q.bl.x - q.tl.x, q.bl.y - q.tl.y);
@@ -477,7 +503,7 @@ function drawTarget(mod, ctx, target, box, cfg, idx, total, explodeStart, reveal
   let tw, th, tx, ty;
   const inset = Math.max(0.5, Math.min(1, cfg.inset ?? DEFAULT_INSET));
   const aw = box.w * inset, ah = box.h * inset;
-  const fit = cfg.fit || "contain";
+  const fit = cfg.fit || "stretch";
   if (fit === "stretch") {
     tw = aw;
     th = ah;
