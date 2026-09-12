@@ -35,6 +35,12 @@ function emptyPlayback() {
     updatedAt: Date.now(),
     rate: 1,
     locked: true, // controls locked to host by default
+    webPlayable: true,
+    codecTip: null,
+    videoCodec: null,
+    audioCodec: null,
+    // Bumped after temp-file remux/probe so Activity players reload the stream.
+    mediaRevision: 0,
   };
 }
 
@@ -217,6 +223,23 @@ export function setFeedStatus(channelId, status) {
   const room = rooms.get(channelId);
   if (!room || room.playback.feedStatus === status) return;
   room.playback.feedStatus = status;
+  broadcast(room);
+}
+
+// Attach codec / web-playability meta after a host upload is probed/remuxed.
+export function setPlaybackMeta(channelId, meta = {}) {
+  const room = rooms.get(channelId);
+  if (!room) return;
+  if (meta.webPlayable != null) room.playback.webPlayable = Boolean(meta.webPlayable);
+  if ('codecTip' in meta) room.playback.codecTip = meta.codecTip || null;
+  if ('videoCodec' in meta) room.playback.videoCodec = meta.videoCodec || null;
+  if ('audioCodec' in meta) room.playback.audioCodec = meta.audioCodec || null;
+  if (meta.bumpRevision || meta.mediaRevision != null) {
+    room.playback.mediaRevision =
+      meta.mediaRevision != null
+        ? Number(meta.mediaRevision) || 0
+        : (room.playback.mediaRevision || 0) + 1;
+  }
   broadcast(room);
 }
 

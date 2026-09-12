@@ -76,6 +76,13 @@ body {
 }
 .now-playing { text-align: center; color: var(--muted); font-size: .8rem; margin: .5rem 0 0; min-height: 1.1em; }
 .feed-note { text-align: center; font-size: .8rem; margin: .35rem auto 0; max-width: 90%; padding: .35rem .7rem; border-radius: 999px; background: rgba(210,59,59,.15); border: 1px solid rgba(210,59,59,.4); color: #ffb0b0; }
+.codec-banner {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+  padding: .7rem .9rem; font-size: .78rem; line-height: 1.35; text-align: center;
+  background: linear-gradient(180deg, transparent, rgba(8,8,16,.92) 28%);
+  color: #ffd7a0; border-top: 1px solid rgba(201,162,39,.35);
+  max-height: 42%; overflow-y: auto;
+}
 
 /* ---- Controls ---- */
 .controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: .4rem; padding: .6rem; }
