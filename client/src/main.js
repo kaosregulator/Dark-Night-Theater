@@ -155,10 +155,17 @@ async function boot() {
         player.video.muted = false;
       });
     } else if (e.type === 'decode-fail') {
+      // Never treat codec errors as fatal while the server is still converting.
+      if (sync.snapshot?.playback?.converting) {
+        ui.showCodecBanner(
+          sync.snapshot.playback.codecTip || 'Converting video for Discord…'
+        );
+        return;
+      }
       ui.showDecodeFail(e.detail);
       ui.showTapToPlay(() => player.unlockAndPlay({ unmute: true }));
     } else if (e.type === 'converting') {
-      ui.showCodecBanner(e.detail);
+      ui.showCodecBanner(e.detail || 'Converting video for Discord…');
     } else if (e.type === 'decode-ok') {
       if (!sync.snapshot?.playback?.codecTip && !sync.snapshot?.playback?.converting) {
         ui.hideCodecBanner();
@@ -221,8 +228,16 @@ async function boot() {
       if (amInside(sync.snapshot)) enterWatching(ui, player, sync);
     }
     if (ev?.type === 'media-ready') {
-      ui.toast('✅ Discord-safe stream ready');
-      if (!menuOpen && amInside(sync.snapshot)) player.applyState(sync.snapshot.playback);
+      const pb = sync.snapshot?.playback;
+      // Converted MP4 is behind the same /tmedia URL — clear sticky codec UI and
+      // force TheaterPlayer to honor the new mediaRevision (hard-resets if needed).
+      if (pb && !pb.converting) {
+        ui.hideCodecBanner();
+        ui.toast('✅ Discord-safe stream ready');
+      }
+      if (!menuOpen && amInside(sync.snapshot) && pb) {
+        player.applyState(pb);
+      }
     }
   });
   sync.addEventListener('sync-error', (e) => ui.toast('⚠️ ' + e.detail));

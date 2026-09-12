@@ -182,6 +182,7 @@ async function prepareForWeb(session) {
           codecTip:
             session.codecTip ||
             'Could not auto-convert this file. Re-export as MP4 H.264 + AAC (HandBrake Fast 1080p30) and host again.',
+          bumpRevision: true,
         });
       }
       return;
