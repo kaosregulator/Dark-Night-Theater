@@ -69,6 +69,7 @@ export class TheaterUI {
               </div>
             </div>
             <div class="tap hidden" id="tap-to-play">▶ Tap to start</div>
+            <div class="codec-banner hidden" id="codec-banner"></div>
           </div>
           <div class="now-playing" id="now-playing"></div>
           <div class="feed-note hidden" id="feed-note"></div>
@@ -258,9 +259,19 @@ export class TheaterUI {
       } else if (inside && this.mode !== 'private' && p.feedStatus === 'stalled') {
         note.textContent = '⏳ Buffering — waiting for the host’s upload…';
         note.classList.remove('hidden');
+      } else if (inside && this.mode !== 'private' && p.feedStatus === 'streaming') {
+        note.textContent = '📡 Streaming while the host uploads…';
+        note.classList.remove('hidden');
       } else {
         note.classList.add('hidden');
       }
+    }
+
+    // Codec / black-screen guidance from server probe (MovieBox HEVC, AC-3, etc.).
+    if (inside && this.mode !== 'private' && p.codecTip) {
+      this.showCodecBanner(p.codecTip);
+    } else if (!this._localDecodeFail) {
+      this.hideCodecBanner();
     }
 
     // Controls availability.
@@ -642,6 +653,40 @@ export class TheaterUI {
       el.classList.add('hidden');
       onTap();
     };
+  }
+
+  showTapToUnmute(onTap) {
+    const el = this.root.querySelector('#tap-to-play');
+    el.textContent = '🔊 Tap for sound';
+    el.classList.remove('hidden');
+    el.onclick = () => {
+      el.classList.add('hidden');
+      el.textContent = '▶ Tap to start';
+      onTap();
+    };
+  }
+
+  showCodecBanner(text) {
+    const el = this.root.querySelector('#codec-banner');
+    if (!el) return;
+    el.textContent = text;
+    el.classList.remove('hidden');
+  }
+
+  hideCodecBanner() {
+    const el = this.root.querySelector('#codec-banner');
+    if (!el) return;
+    el.classList.add('hidden');
+    el.textContent = '';
+    this._localDecodeFail = false;
+  }
+
+  showDecodeFail(detail) {
+    this._localDecodeFail = true;
+    this.showCodecBanner(
+      detail ||
+        'Black screen: Discord can’t decode this file. Use MP4 H.264 + AAC (even size like 1920×1080). HandBrake “Fast 1080p30”.'
+    );
   }
 }
 

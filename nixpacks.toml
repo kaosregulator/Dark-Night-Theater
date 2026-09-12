@@ -1,4 +1,8 @@
-# Railway / Nixpacks build. Builds the Activity frontend, then starts the server.
+# Railway / Nixpacks build. Install ffmpeg for MP4 probe + faststart remux,
+# build the Activity frontend, then start the server.
+[phases.setup]
+nixPkgs = ["ffmpeg"]
+
 [phases.build]
 cmds = ["npm run build"]
 

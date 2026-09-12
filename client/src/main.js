@@ -89,7 +89,21 @@ async function boot() {
   });
 
   player.onLocalControl = (e) => {
-    if (e.type === 'needs-gesture') ui.showTapToPlay(() => player.video.play().catch(() => {}));
+    if (e.type === 'needs-gesture') {
+      ui.showTapToPlay(() => {
+        player.video.muted = false;
+        player.video.play().catch(() => {});
+      });
+    } else if (e.type === 'needs-unmute') {
+      ui.showTapToUnmute(() => {
+        player.video.muted = false;
+      });
+    } else if (e.type === 'decode-fail') {
+      ui.showDecodeFail(e.detail);
+    } else if (e.type === 'decode-ok') {
+      // Keep server codecTip if present; clear only local black-screen guess.
+      if (!sync.snapshot?.playback?.codecTip) ui.hideCodecBanner();
+    }
   };
 
   // ---- Sync -> player + UI --------------------------------------------------

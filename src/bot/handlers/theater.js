@@ -69,7 +69,9 @@ function panelEmbed(channelId) {
     .setTitle('🎬 DarkNight Home Theater')
     .setDescription(
       p.videoUid
-        ? `**Now playing:** ${p.videoName}\n**Status:** ${p.playing ? '▶️ Playing' : '⏸️ Paused'} at \`${pos}\``
+        ? `**Now playing:** ${p.videoName}\n**Status:** ${p.playing ? '▶️ Playing' : '⏸️ Paused'} at \`${pos}\`${
+            p.codecTip ? `\n\n⚠️ **Playback tip:** ${p.codecTip}` : ''
+          }`
         : 'No movie loaded yet. Pick one with `/watch`, then press Play.'
     )
     .addFields(

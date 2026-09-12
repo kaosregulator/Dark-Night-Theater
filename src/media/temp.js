@@ -130,6 +130,36 @@ export function finish(session) {
   session.lastActivity = now();
   setStatus(session, 'complete');
   session.emitter.emit('progress');
+  // Probe + faststart in the background so Discord Chromium can actually paint.
+  prepareForWeb(session).catch((err) => log.warn('temp prepare:', err.message));
+}
+
+async function prepareForWeb(session) {
+  const { probeFile, faststartRemux, codecTip, logProbe } = await import('./probe.js');
+  // Relocate moov to the front when possible (copy remux — no quality loss).
+  const remux = await faststartRemux(session.file);
+  if (remux.ok) log.info(`temp ${session.id}: faststart remux ok`);
+  else if (remux.reason) log.warn(`temp ${session.id}: faststart skipped — ${remux.reason}`);
+
+  const info = await probeFile(session.file);
+  logProbe(session.id, info);
+  session.probe = info;
+  if (info?.ok) {
+    session.webPlayable = Boolean(info.webPlayable);
+    session.codecTip = codecTip(info);
+  }
+  // Push codec tip / webPlayable into the live room so the Activity can warn.
+  if (session.channelId) {
+    const { setPlaybackMeta } = await import('../services/sessions.js');
+    setPlaybackMeta(session.channelId, {
+      webPlayable: session.webPlayable,
+      codecTip: session.codecTip || null,
+      videoCodec: info?.videoCodec || null,
+      audioCodec: info?.audioCodec || null,
+      // Remux rewrites the file on disk — force Activity players to reload.
+      bumpRevision: true,
+    });
+  }
 }
 
 // Resolve once at least `need` bytes are on disk (or the upload completed), or
