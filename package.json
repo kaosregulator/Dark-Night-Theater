@@ -12,7 +12,8 @@
     "register": "node src/bot/register-commands.js",
     "dev": "node --watch src/index.js",
     "dev:client": "vite",
-    "postinstall": "node scripts/postinstall.js"
+    "postinstall": "node scripts/postinstall.js",
+    "test:moviebox": "node scripts/test-large-moviebox.mjs"
   },
   "dependencies": {
     "@discord/embedded-app-sdk": "^1.9.0",

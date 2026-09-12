@@ -142,14 +142,29 @@ host.post('/api/host/session', express.json(), async (req, res) => {
 
   const session = temp.create({ channelId: s.voiceChannelId, name: req.body?.name, size: req.body?.size, addedBy: s.userId });
   try {
-    const playback = temp.getPlayback(session);
+    const playback = {
+      ...temp.getPlayback(session),
+      webPlayable: session.webPlayable !== false,
+      converting: Boolean(session.converting),
+      codecTip: session.codecTip || null,
+    };
     const video = { uid: session.id, name: req.body?.title ? String(req.body.title) : session.name, category: req.body?.category || 'Now Playing' };
     sessions.startClanMovie(s.voiceChannelId, { hostId: s.userId, guildId: s.guildId, video, playback });
     const voice = await client.channels.fetch(s.voiceChannelId).catch(() => null);
     const text = s.textChannelId ? await client.channels.fetch(s.textChannelId).catch(() => null) : null;
     const activityUrl = voice ? await createActivityInvite(voice) : null;
     if (text) await publishPanel(text, s.voiceChannelId, activityUrl);
-    res.json({ ok: true, sessionId: session.id, name: session.name, activityUrl, webPlayable: session.webPlayable });
+    res.json({
+      ok: true,
+      sessionId: session.id,
+      name: session.name,
+      activityUrl,
+      webPlayable: session.webPlayable !== false,
+      converting: Boolean(session.converting),
+      codecTip: session.codecTip || null,
+      suspectConvert: Boolean(session.suspectConvert),
+      size: session.total,
+    });
   } catch (err) {
     temp.scrub(session.id);
     log.warn('host session start:', err.message);
@@ -241,8 +256,18 @@ host.put('/api/host/session/:id/data', (req, res) => {
     if (aborted) return;
     ended = true;
     ws.end(() => {
-      temp.finish(session);
-      if (!res.headersSent) res.json({ ok: true, bytes: session.receivedBytes });
+      // Chunked uploads: only finish (probe/HLS) when the declared size is fully
+      // on disk. A mid-file chunk end must NOT mark the movie complete.
+      const done =
+        session.total > 0 ? session.receivedBytes >= session.total : true;
+      if (done) temp.finish(session);
+      if (!res.headersSent) {
+        res.json({
+          ok: true,
+          bytes: session.receivedBytes,
+          complete: Boolean(session.complete || done),
+        });
+      }
     });
   });
   // Host tab closed / network dropped before finishing — preserve everything,
@@ -350,22 +375,47 @@ async function hostSession(f){
   SID=meta.sessionId; FILE=f; retries=0;
   hostMsg='🎉 <b>Party started</b> — “'+meta.name+'”! Prefer launching from Discord: voice channel → <b>Activities</b> → DarkNight (same window). <b>Keep this tab open</b> while it streams.';
   if(meta.activityUrl) hostMsg+='<br><a class="open" href="'+meta.activityUrl+'" target="_blank" rel="noopener">▶ Open Theater invite</a> <small>(invite links may open another Discord window — that’s Discord, not a bug)</small>';
-  if(meta.webPlayable===false) hostMsg+='<br><small>⚠️ This container may not play in browsers — use MP4 H.264/AAC.</small>';
+  if(meta.converting || meta.suspectConvert){
+    hostMsg+='<br><small>🛡️ MovieBox/large file detected — Discord playback is <b>held</b> until a safe HLS stream is ready (avoids the black screen). Upload finishes first, then the first segments unlock the Theater.</small>';
+    if(meta.codecTip) hostMsg+='<br><small>'+esc(meta.codecTip)+'</small>';
+  } else if(meta.webPlayable===false){
+    hostMsg+='<br><small>⚠️ This container may not play in browsers — use MP4 H.264/AAC.</small>';
+  }
   setStatus(hostMsg);
   $('#barwrap').style.display='block';
   streamFrom(0);
 }
+// Upload in fixed chunks so multi‑GB MovieBox files don't die on a single giant
+// PUT (Railway/proxy idle timeouts). Server only runs probe/HLS when bytes >= size.
+var CHUNK=8*1024*1024;
 function streamFrom(offset){
+  const end=Math.min(offset+CHUNK, FILE.size);
+  const blob=FILE.slice(offset, end);
   const xhr=new XMLHttpRequest();
   xhr.open('PUT','/api/host/session/'+SID+'/data?s='+encodeURIComponent(S)+'&offset='+offset);
   xhr.upload.onprogress=e=>{ if(e.lengthComputable){ retries=0; $('#bar').style.width=((offset+e.loaded)/FILE.size*100)+'%'; } };
-  xhr.onload=()=>{ if(xhr.status>=200 && xhr.status<300){ $('#bar').style.width='100%'; setStatus(hostMsg+'<br><small>✅ Fully uploaded — optimizing for Discord…</small>'); pollProbe(0); } else { resumeSoon(); } };
+  xhr.onload=()=>{
+    if(xhr.status<200 || xhr.status>=300){ resumeSoon(); return; }
+    let r={}; try{r=JSON.parse(xhr.responseText);}catch{}
+    const next=(r.bytes!=null)?r.bytes:end;
+    $('#bar').style.width=(next/FILE.size*100)+'%';
+    retries=0;
+    if(r.complete || next>=FILE.size){
+      $('#bar').style.width='100%';
+      setStatus(hostMsg+'<br><small>✅ Fully uploaded — optimizing for Discord…</small>');
+      pollProbe(0);
+      return;
+    }
+    setStatus(hostMsg+'<br><small>📡 Uploading… '+Math.floor(next/FILE.size*100)+'% ('+Math.floor(next/1048576)+' / '+Math.floor(FILE.size/1048576)+' MB). Keep this tab open.</small>');
+    streamFrom(next);
+  };
   xhr.onerror=()=>resumeSoon();
   xhr.onabort=()=>resumeSoon();
-  xhr.send(FILE.slice(offset));
+  xhr.send(blob);
 }
 async function pollProbe(n){
-  if(n>120){ setStatus(hostMsg+'<br><small>✅ Uploaded. Open the Theater and press ▶. If still black, re-encode to H.264+AAC.</small>'); return; }
+  // Large MovieBox converts can take a while before the first HLS segments appear.
+  if(n>480){ setStatus(hostMsg+'<br><small>✅ Uploaded. Open the Theater and press ▶. If still black, re-encode to H.264+AAC.</small>'); return; }
   try{
     const r=await fetch('/api/host/session/'+SID+'/probe?s='+encodeURIComponent(S)).then(x=>x.json());
     if(!r.exists){ setStatus('The party has ended.'); return; }

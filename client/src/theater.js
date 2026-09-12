@@ -302,8 +302,16 @@ export class TheaterUI {
     // Temp-session upload feed notice (only for the shared clan movie).
     const note = this.root.querySelector('#feed-note');
     if (note) {
-      if (inside && this.mode !== 'private' && p.converting) {
-        note.textContent = '⚙️ Converting to Discord-safe H.264… this can take a few minutes on large files.';
+      if (inside && this.mode !== 'private' && p.converting && (p.feedStatus === 'streaming' || p.feedStatus === 'stalled')) {
+        // MovieBox/large files: hold the black progressive URL while the host
+        // finishes uploading, then build Discord HLS.
+        note.textContent =
+          p.feedStatus === 'stalled'
+            ? '⏳ Large/MovieBox upload stalled — waiting for the host… Discord stream builds after upload finishes.'
+            : '📡 Uploading MovieBox/large file… Discord playback is held until a safe HLS stream is ready (avoids the black screen).';
+        note.classList.remove('hidden');
+      } else if (inside && this.mode !== 'private' && p.converting) {
+        note.textContent = '⚙️ Building Discord-safe HLS… first segments unlock playback soon on large files.';
         note.classList.remove('hidden');
       } else if (inside && this.mode !== 'private' && p.feedStatus === 'disconnected') {
         note.textContent = '⚠️ Host connection lost — waiting for the host…';
@@ -324,7 +332,10 @@ export class TheaterUI {
     if (inside && this.mode !== 'private' && p.converting) {
       this._localDecodeFail = false;
       this.showCodecBanner(
-        p.codecTip || 'Converting video for Discord… keep the host tab open.'
+        p.codecTip ||
+          (p.feedStatus === 'streaming' || p.feedStatus === 'stalled'
+            ? 'Uploading MovieBox/large file… Discord stream builds after upload (black screen avoided). Keep the host tab open.'
+            : 'Building Discord-safe HLS… keep the host tab open.')
       );
     } else if (inside && this.mode !== 'private' && p.codecTip) {
       this.showCodecBanner(p.codecTip);

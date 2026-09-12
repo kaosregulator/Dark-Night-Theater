@@ -354,6 +354,13 @@ export function startClanMovie(channelId, { hostId, guildId, video, playback }) 
     positionAtUpdate: 0,
     updatedAt: Date.now(),
     locked: true,
+    // Host session may already know MovieBox/large files need convert — pass
+    // through so Activities never attach HEVC progressive during upload.
+    webPlayable: playback.webPlayable != null ? Boolean(playback.webPlayable) : true,
+    codecTip: playback.codecTip || null,
+    converting: Boolean(playback.converting),
+    videoCodec: playback.videoCodec || null,
+    audioCodec: playback.audioCodec || null,
   };
   // Host is already "in the theater"; everyone else stays in the foyer until Enter.
   for (const p of room.participants.values()) {
