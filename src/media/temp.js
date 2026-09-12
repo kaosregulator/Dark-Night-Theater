@@ -5,6 +5,7 @@ import { EventEmitter } from 'node:events';
 import { config } from '../config.js';
 import { MIME, NON_WEB } from './store.js';
 import { signMediaToken } from './token.js';
+import { looksLikeNeedsConvert, suspectReason, LARGE_HOLD_BYTES } from './suspect.js';
 import { bus as sessionBus, setFeedStatus } from '../services/sessions.js';
 import { log } from '../logger.js';
 
@@ -54,19 +55,30 @@ export function create({ channelId, name, size, addedBy }) {
   const id = crypto.randomBytes(9).toString('hex');
   const ext = extOf(name);
   const file = path.join(TMP_DIR, `${id}${ext}`);
+  const declaredSize = Number(size) || 0;
+  const displayName =
+    (name ? path.basename(String(name), path.extname(String(name))) : 'Movie').replace(/[._]+/g, ' ').trim() ||
+    'Movie';
+  // MovieBox / large rips: hold progressive playback until probe/HLS. Otherwise
+  // Discord attaches HEVC-in-MP4 immediately → permanent black "Starting…" screen.
+  const suspect = looksLikeNeedsConvert(String(name || displayName), declaredSize) || NON_WEB.has(ext);
+  const tip = suspectReason(String(name || displayName), declaredSize);
   const session = {
     id,
     channelId: channelId || null,
-    name: (name ? path.basename(String(name), path.extname(String(name))) : 'Movie').replace(/[._]+/g, ' ').trim() || 'Movie',
+    name: displayName,
     ext,
     file,
-    total: Number(size) || 0, // declared final size (from the browser's File.size)
+    total: declaredSize, // declared final size (from the browser's File.size)
     receivedBytes: 0,
     complete: false,
     connected: false, // is a host upload actively feeding right now?
     everConnected: false,
     feedStatus: 'streaming',
-    webPlayable: !NON_WEB.has(ext),
+    webPlayable: suspect ? false : !NON_WEB.has(ext),
+    suspectConvert: suspect,
+    converting: suspect,
+    codecTip: tip,
     kind: ext === '.m3u8' ? 'hls' : 'file',
     createdAt: now(),
     lastActivity: now(),
@@ -75,6 +87,11 @@ export function create({ channelId, name, size, addedBy }) {
   session.emitter.setMaxListeners(0);
   byId.set(id, session);
   if (channelId) byChannel.set(channelId, id);
+  if (suspect) {
+    log.info(
+      `temp ${id}: holding playback until Discord-safe stream (suspect MovieBox/large · ${(declaredSize / 1048576).toFixed(0)} MB)`
+    );
+  }
   return session;
 }
 
@@ -143,37 +160,68 @@ async function prepareForWeb(session) {
   if (session.prepareStarted) return;
   session.prepareStarted = true;
   const { probeFile, faststartRemux, codecTip, logProbe } = await import('./probe.js');
-  // Relocate moov to the front when possible (copy remux — no quality loss).
-  const remux = await faststartRemux(session.file);
-  if (remux.ok) log.info(`temp ${session.id}: faststart remux ok`);
-  else if (remux.reason) log.warn(`temp ${session.id}: faststart skipped — ${remux.reason}`);
 
-  const info = await probeFile(session.file);
+  // Probe FIRST. Skipping an upfront full-file faststart remux on multi‑GB
+  // MovieBox files avoids the 120s timeout + 2× disk copy before HLS can start.
+  const failClosed = Boolean(session.suspectConvert);
+  let info = await probeFile(session.file, { failClosed });
   logProbe(session.id, info);
   session.probe = info;
+
+  // Fail-closed: unknown/unreadable MovieBox-ish uploads must attempt HLS, not
+  // silently serve progressive HEVC (black screen forever).
+  if (!info?.ok && failClosed) {
+    info = {
+      ok: true,
+      webPlayable: false,
+      videoCodec: info?.videoCodec || null,
+      audioCodec: info?.audioCodec || null,
+      oddSize: false,
+      reason: info?.reason || 'Probe failed — converting to be safe',
+    };
+    session.probe = info;
+  }
+
   if (info?.ok) {
     session.webPlayable = Boolean(info.webPlayable);
     session.codecTip = codecTip(info);
   }
 
-  const needsConvert = info?.ok && (!info.webPlayable || info.oddSize);
+  const needsConvert = Boolean(info?.ok && (!info.webPlayable || info.oddSize));
   session.converting = needsConvert;
+
+  if (!needsConvert) {
+    // Safe progressive MP4/WebM — optional moov reloc for faster start. Cap size
+    // so huge H.264 hosts aren't stuck remuxing for minutes on Railway disk.
+    const remux = await faststartRemux(session.file, {
+      timeoutMs: 120000,
+      maxBytes: LARGE_HOLD_BYTES,
+    });
+    if (remux.ok) log.info(`temp ${session.id}: faststart remux ok`);
+    else if (remux.reason) log.warn(`temp ${session.id}: faststart skipped — ${remux.reason}`);
+  }
+
   if (session.channelId) {
     const { setPlaybackMeta } = await import('../services/sessions.js');
     setPlaybackMeta(session.channelId, {
-      webPlayable: needsConvert ? false : session.webPlayable,
+      webPlayable: needsConvert ? false : session.webPlayable !== false,
       codecTip: needsConvert
         ? 'Building a Discord-safe stream… playback unlocks after the first segments (you do not wait for the whole movie to finish converting).'
         : session.codecTip || null,
       videoCodec: info?.videoCodec || null,
       audioCodec: info?.audioCodec || null,
       converting: needsConvert,
-      // Remux rewrites the file on disk — force Activity players to reload.
+      // Remux / codec decision — force Activity players to reload (or attach now).
       bumpRevision: true,
     });
   }
 
-  if (!needsConvert) return;
+  if (!needsConvert) {
+    session.converting = false;
+    session.webPlayable = true;
+    session.codecTip = null;
+    return;
+  }
 
   // MovieBox / HEVC / AC-3: Discord Activities can't decode HEVC, and the
   // Activity proxy is flaky with large progressive MP4s. Live HLS publishes

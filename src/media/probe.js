@@ -33,7 +33,7 @@ function run(bin, args, timeoutMs = 20000) {
   });
 }
 
-export async function probeFile(filePath) {
+export async function probeFile(filePath, opts = {}) {
   if (!filePath || !fs.existsSync(filePath)) {
     return { ok: false, webPlayable: false, reason: 'File missing' };
   }
@@ -48,10 +48,12 @@ export async function probeFile(filePath) {
   ];
   const res = await run('ffprobe', args, 25000);
   if (!res.ok) {
-    // ffprobe missing or unreadable file — don't block; warn softly.
+    // Fail closed for host MovieBox/large flows (opts.failClosed) — otherwise a
+    // probe timeout would skip convert and leave Discord on a black HEVC MP4.
+    const failClosed = Boolean(opts?.failClosed);
     return {
       ok: false,
-      webPlayable: true,
+      webPlayable: !failClosed,
       reason: res.err?.includes('ENOENT') ? 'ffprobe not installed' : 'Could not probe file',
       raw: res.err?.slice(0, 200),
     };
@@ -60,7 +62,8 @@ export async function probeFile(filePath) {
   try {
     data = JSON.parse(res.out || '{}');
   } catch {
-    return { ok: false, webPlayable: true, reason: 'Bad ffprobe output' };
+    const failClosed = Boolean(opts?.failClosed);
+    return { ok: false, webPlayable: !failClosed, reason: 'Bad ffprobe output' };
   }
   const streams = data.streams || [];
   const video = streams.find((s) => s.codec_type === 'video');
@@ -94,8 +97,18 @@ export async function probeFile(filePath) {
 
 // Remux in place with +faststart (moov at front). Copy streams — no re-encode.
 // Helps progressive /tmedia playback when the uploader's MP4 had moov at the end.
-export async function faststartRemux(filePath) {
+export async function faststartRemux(filePath, { timeoutMs = 120000, maxBytes = 0 } = {}) {
   if (!filePath || !fs.existsSync(filePath)) return { ok: false, reason: 'missing' };
+  try {
+    const size = fs.statSync(filePath).size;
+    // Full-file copy remux on multi‑GB MovieBox rips often hits the timeout and
+    // burns ephemeral disk — callers that already know they need HLS should skip.
+    if (maxBytes > 0 && size > maxBytes) {
+      return { ok: false, reason: `file too large for faststart (${(size / 1048576).toFixed(0)} MB)` };
+    }
+  } catch {
+    /* continue */
+  }
   const dir = path.dirname(filePath);
   const tmp = path.join(dir, `.faststart-${path.basename(filePath)}`);
   const args = [
@@ -108,7 +121,7 @@ export async function faststartRemux(filePath) {
     '+faststart',
     tmp,
   ];
-  const res = await run('ffmpeg', args, 120000);
+  const res = await run('ffmpeg', args, timeoutMs);
   if (!res.ok || !fs.existsSync(tmp)) {
     try {
       fs.rmSync(tmp, { force: true });

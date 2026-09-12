@@ -385,14 +385,23 @@ body {
 }
 
 /* Ghost reaction buttons on the screen */
-.ghost-react {
-  position: absolute; z-index: 5; opacity: .22; background: transparent; border: 0;
-  font-size: 1.2rem; cursor: pointer; transition: .15s; padding: .35rem;
+.ghost-reacts {
+  position: absolute; inset: 0; z-index: 5; pointer-events: none;
 }
-.ghost-react:hover, .ghost-react:focus { opacity: .9; transform: scale(1.15); }
-.ghost-react[data-react="popcorn"] { left: 8px; bottom: 8px; }
-.ghost-react[data-react="cheer"] { right: 8px; bottom: 8px; }
-.ghost-react[data-react="boo"] { right: 8px; top: 8px; }
+.ghost-react {
+  position: absolute; z-index: 5; opacity: .2; background: transparent; border: 0;
+  font-size: 1.15rem; cursor: pointer; transition: .15s; padding: .35rem;
+  pointer-events: auto; filter: drop-shadow(0 2px 4px rgba(0,0,0,.45));
+}
+.ghost-react:hover, .ghost-react:focus { opacity: .95; transform: scale(1.18); }
+.ghost-react[data-react="popcorn"] { left: 6px; bottom: 6px; }
+.ghost-react[data-react="cheer"] { left: 42px; bottom: 6px; }
+.ghost-react[data-react="boo"] { right: 6px; top: 6px; }
+.ghost-react[data-react="heart"] { right: 42px; bottom: 6px; }
+.ghost-react[data-react="laugh"] { left: 78px; bottom: 6px; }
+.ghost-react[data-react="wow"] { right: 78px; bottom: 6px; }
+.ghost-react[data-react="soda"] { left: 6px; top: 6px; }
+.ghost-react[data-react="candy"] { left: 42px; top: 6px; }
 
 .snack-overlay {
   position: absolute; inset: 0; z-index: 7; display: flex; align-items: center; justify-content: center;
@@ -402,8 +411,9 @@ body {
 .snack-card {
   text-align: center; padding: 1.2rem 1.4rem; border-radius: 16px;
   background: linear-gradient(180deg, #2a1a12, #140e0c); border: 1px solid rgba(201,162,39,.4);
-  animation: snackIn .45s ease;
+  animation: snackIn .45s ease; max-width: 20rem;
 }
+.snack-card .btn { margin-top: .75rem; }
 .snack-emoji { font-size: 2.2rem; }
 @keyframes snackIn { from { transform: scale(.9); opacity: 0 } to { transform: scale(1); opacity: 1 } }
 
@@ -412,7 +422,107 @@ body {
   position: absolute; font-size: 1.8rem; animation: floatUp 1.7s ease-out forwards;
   filter: drop-shadow(0 4px 8px rgba(0,0,0,.5));
 }
+.float-react.throw {
+  animation: throwArc 1.5s ease-out forwards;
+}
 @keyframes floatUp {
   0% { transform: translateY(0) scale(1); opacity: 1; }
   100% { transform: translateY(-120px) scale(1.3); opacity: 0; }
+}
+@keyframes throwArc {
+  0% { transform: translate(0, 0) rotate(0deg) scale(1); opacity: 1; }
+  60% { opacity: 1; }
+  100% { transform: translate(var(--dx, 40px), -140px) rotate(var(--rot, 25deg)) scale(1.25); opacity: 0; }
+}
+
+/* Peeking ghost on the screen after a boo react */
+.screen-ghost {
+  position: absolute; right: 10%; top: 18%; font-size: 2.4rem; z-index: 6;
+  animation: ghostPeek 2.2s ease-in-out forwards; pointer-events: none;
+  filter: drop-shadow(0 0 12px rgba(255,255,255,.25));
+}
+@keyframes ghostPeek {
+  0% { transform: translateY(20px) scale(.6); opacity: 0; }
+  20% { transform: translateY(0) scale(1); opacity: .85; }
+  70% { opacity: .85; }
+  100% { transform: translateY(-10px) scale(.9); opacity: 0; }
+}
+
+/* Cinema fullscreen fallback (Discord Activities often block Fullscreen API) */
+.stage.cinema-fs .floor,
+.stage.cinema-fs #social,
+.stage.cinema-fs #lobby,
+.stage.cinema-fs #foyer,
+.stage.cinema-fs #join-flow,
+.stage.cinema-fs #main-menu,
+body.cinema-fs .topbar .brand span { display: none !important; }
+.stage.cinema-fs .screen-wrap {
+  flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 0;
+}
+.stage.cinema-fs .screen {
+  max-width: none; width: 100%; height: 100%; aspect-ratio: auto;
+  border-radius: 0; transform: none;
+  box-shadow: none;
+}
+.stage.cinema-fs .curtain,
+.stage.cinema-fs .beam { opacity: .35; }
+.stage.cinema-fs #controls { opacity: .85; }
+.btn.active { outline: 1px solid var(--gold); background: rgba(201,162,39,.18); }
+
+/* FX off — kill floats, foyer twinkles, ghost peeks, screen reacts */
+.stage.fx-off .float-layer,
+.stage.fx-off .float-emoji,
+.stage.fx-off .float-react,
+.stage.fx-off .screen-ghost,
+.stage.fx-off .foyer-sparkle,
+.stage.fx-off .beam { display: none !important; }
+.stage.fx-off .ghost-react { opacity: .08; }
+.stage.fx-off .curtain { animation: none !important; }
+
+/* Concession mini-window docked while the movie plays */
+.concession-dock {
+  position: absolute; right: 12px; bottom: 12px; z-index: 60;
+  width: min(340px, calc(100vw - 24px));
+  pointer-events: auto;
+}
+.concession-dock.hidden { display: none !important; }
+.conc-panel {
+  background: linear-gradient(180deg, #1a1420, #0e0c14);
+  border: 1px solid rgba(201,162,39,.45);
+  border-radius: 14px;
+  box-shadow: 0 18px 50px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.04);
+  overflow: hidden;
+}
+.conc-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: .45rem .6rem; border-bottom: 1px solid var(--line);
+  background: rgba(201,162,39,.08);
+}
+.conc-title { font-weight: 800; font-size: .85rem; color: var(--gold-2); letter-spacing: .04em; }
+.conc-actions { display: flex; gap: .25rem; }
+.conc-actions .btn { padding: .2rem .45rem; font-size: .9rem; min-width: 0; }
+.conc-mode.active { outline: 1px solid var(--gold); background: rgba(201,162,39,.2); }
+.conc-hint {
+  margin: 0; padding: .35rem .65rem; font-size: .72rem; color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+.conc-canvas {
+  width: 100%; height: 400px; max-height: 50vh; background: #0a0a12;
+}
+.conc-canvas canvas { display: block; margin: 0 auto; }
+.conc-foot {
+  display: flex; align-items: center; gap: .5rem; justify-content: space-between;
+  padding: .4rem .6rem; font-size: .75rem; border-top: 1px solid var(--line);
+  background: rgba(0,0,0,.25);
+}
+.conc-foot .btn { padding: .25rem .55rem; font-size: .75rem; }
+
+@media (max-width: 520px) {
+  .concession-dock {
+    left: 8px; right: 8px; bottom: 8px; width: auto;
+  }
+  .conc-canvas { height: 320px; }
+  .ghost-react[data-react="laugh"],
+  .ghost-react[data-react="wow"],
+  .ghost-react[data-react="candy"] { display: none; }
 }

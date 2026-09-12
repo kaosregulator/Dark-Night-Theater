@@ -40,4 +40,10 @@ export const commands = [
     .setName('theater-settings')
     .setDescription('Configure Home Theater for THIS server (admins only).')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()),
+
+  // Ported from DN-cards — interactive dashboard; options live in the panel.
+  new SlashCommandBuilder()
+    .setName('emoji')
+    .setDescription('Make an animated emoji from any avatar, image, or server icon')
+    .setDMPermission(false),
 ].map((c) => c.toJSON());

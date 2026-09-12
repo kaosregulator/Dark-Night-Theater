@@ -3,6 +3,7 @@
 // stays light enough for Discord mobile. All state comes from setState().
 
 import './styles.css';
+import { prefs } from './prefs.js';
 
 const SEAT_COUNT = 24;
 const ITEMS = [
@@ -11,10 +12,21 @@ const ITEMS = [
   { key: 'candy', emoji: '🍫', label: 'Candy' },
 ];
 
+/** On-screen ghost reacts — inconspicuous until you hover/tap. */
+const REACTS = [
+  { key: 'popcorn', emoji: '🍿', title: 'Throw popcorn', throwy: true },
+  { key: 'cheer', emoji: '👏', title: 'Cheer' },
+  { key: 'boo', emoji: '👻', title: 'Playful ghost' },
+  { key: 'heart', emoji: '❤️', title: 'Love this' },
+  { key: 'laugh', emoji: '😂', title: 'Laugh' },
+  { key: 'wow', emoji: '😮', title: 'Wow' },
+  { key: 'soda', emoji: '🥤', title: 'Spill soda' },
+  { key: 'candy', emoji: '🍬', title: 'Toss candy' },
+];
+
 const SODAS = ['Cola', 'Lemon-Lime', 'Root Beer', 'Iced Tea', 'Water'];
 const POPCORN = ['Small', 'Medium', 'Large', 'Jumbo'];
 const SNACKS = ['Candy', 'Nachos', 'Pretzel', 'Chocolate', 'None'];
-
 function fmt(sec) {
   const s = Math.max(0, Math.round(sec || 0));
   const h = Math.floor(s / 3600);
@@ -33,6 +45,9 @@ export class TheaterUI {
     this.inside = true;
     this.library = [];
     this._joinPicks = { soda: null, popcorn: null, snacks: null, seat: null };
+    this._cinemaFs = false;
+    this._concession = null;
+    this._fxEnabled = prefs.fxEnabled;
   }
 
   on(evt, cb) {
@@ -53,6 +68,8 @@ export class TheaterUI {
             <span class="watchers">👥 <span id="watch-count">0</span></span>
           </div>
           <div class="topbar-actions">
+            <button class="btn" id="btn-fx" title="Toggle screen animations">✨</button>
+            <button class="btn" id="btn-concession" title="Concession stand mini-game">🍿</button>
             <button class="btn" id="btn-menu" title="Main menu">🏠</button>
             <button class="btn" id="btn-fullscreen" title="Fullscreen">⛶</button>
             <button class="btn" id="btn-lobby">🎞️ Movies</button>
@@ -63,7 +80,7 @@ export class TheaterUI {
           <div class="curtain left"></div>
           <div class="curtain right"></div>
           <div class="beam"></div>
-          <div class="screen">
+          <div class="screen" id="theater-screen">
             <video id="theater-video" playsinline webkit-playsinline></video>
             <div class="screen-empty" id="screen-empty">
               <div class="screen-empty-inner">
@@ -77,12 +94,16 @@ export class TheaterUI {
                 <div class="snack-card">
                   <div class="snack-emoji">🍿🥤</div>
                   <h2>Snack Break!</h2>
-                  <p>Go grab something — the show is paused. Don't miss the good part.</p>
+                  <p>Go grab something — the show is paused. Or visit the concession mini-game while you wait.</p>
+                  <button type="button" class="btn primary" id="snack-play-conc">🎮 Play Concession</button>
                 </div>
               </div>
-              <button class="ghost-react" data-react="popcorn" title="Throw popcorn">🍿</button>
-              <button class="ghost-react" data-react="cheer" title="Cheer">👏</button>
-              <button class="ghost-react" data-react="boo" title="Boo (playful)">👻</button>
+              <div class="ghost-reacts" id="ghost-reacts">
+                ${REACTS.map(
+                  (r) =>
+                    `<button class="ghost-react" data-react="${r.key}" title="${r.title}">${r.emoji}</button>`
+                ).join('')}
+              </div>
           </div>
           <div class="now-playing" id="now-playing"></div>
           <div class="feed-note hidden" id="feed-note"></div>
@@ -101,6 +122,7 @@ export class TheaterUI {
         <div class="join-flow hidden" id="join-flow"></div>
         <div class="intro hidden" id="intro"></div>
         <div class="main-menu hidden" id="main-menu"></div>
+        <div class="concession-dock hidden" id="concession-dock"></div>
         <div class="toasts" id="toasts"></div>
         <div class="float-layer" id="float-layer"></div>
       </div>
@@ -110,12 +132,22 @@ export class TheaterUI {
     this.root.querySelector('#btn-lobby').onclick = () => this.toggleLobby();
     this.root.querySelector('#btn-menu').onclick = () => this.emit('open-menu');
     this.root.querySelector('#btn-fullscreen').onclick = () => this.toggleFullscreen();
+    this.root.querySelector('#btn-fx').onclick = () => this.toggleFx();
+    this.root.querySelector('#btn-concession').onclick = () => this.toggleConcession();
+    this.root.querySelector('#snack-play-conc')?.addEventListener('click', () => this.toggleConcession(true));
     this.root.querySelectorAll('.ghost-react').forEach((b) => {
       b.onclick = () => {
         this.emit('react', { kind: b.dataset.react });
         this.floatReact(b.dataset.react);
       };
     });
+    document.addEventListener('fullscreenchange', () => this._syncFsButton());
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && this._cinemaFs && !document.fullscreenElement) {
+        this.setCinemaFullscreen(false);
+      }
+    });
+    this.applyFxPref();
     this.renderSeats();
     this.renderSocial();
     this.renderControls();
@@ -202,15 +234,16 @@ export class TheaterUI {
   // ---- Social --------------------------------------------------------------
   renderSocial() {
     const el = this.root.querySelector('#social');
-    el.innerHTML = ITEMS.map(
-      (i) => `<button class="btn social-btn" data-item="${i.key}">${i.emoji} ${i.label}</button>`
-    ).join('');
-    el.querySelectorAll('.social-btn').forEach((b) => {
+    el.innerHTML =
+      ITEMS.map((i) => `<button class="btn social-btn" data-item="${i.key}">${i.emoji} ${i.label}</button>`).join('') +
+      `<button class="btn social-btn" id="social-concession">🎮 Concession</button>`;
+    el.querySelectorAll('.social-btn[data-item]').forEach((b) => {
       b.onclick = () => {
         this.emit('item', { item: b.dataset.item });
         this.floatEmoji(ITEMS.find((x) => x.key === b.dataset.item)?.emoji || '🍿');
       };
     });
+    el.querySelector('#social-concession').onclick = () => this.toggleConcession(true);
   }
 
   // ---- Host controls -------------------------------------------------------
@@ -302,8 +335,16 @@ export class TheaterUI {
     // Temp-session upload feed notice (only for the shared clan movie).
     const note = this.root.querySelector('#feed-note');
     if (note) {
-      if (inside && this.mode !== 'private' && p.converting) {
-        note.textContent = '⚙️ Converting to Discord-safe H.264… this can take a few minutes on large files.';
+      if (inside && this.mode !== 'private' && p.converting && (p.feedStatus === 'streaming' || p.feedStatus === 'stalled')) {
+        // MovieBox/large files: hold the black progressive URL while the host
+        // finishes uploading, then build Discord HLS.
+        note.textContent =
+          p.feedStatus === 'stalled'
+            ? '⏳ Large/MovieBox upload stalled — waiting for the host… Discord stream builds after upload finishes.'
+            : '📡 Uploading MovieBox/large file… Discord playback is held until a safe HLS stream is ready (avoids the black screen).';
+        note.classList.remove('hidden');
+      } else if (inside && this.mode !== 'private' && p.converting) {
+        note.textContent = '⚙️ Building Discord-safe HLS… first segments unlock playback soon on large files.';
         note.classList.remove('hidden');
       } else if (inside && this.mode !== 'private' && p.feedStatus === 'disconnected') {
         note.textContent = '⚠️ Host connection lost — waiting for the host…';
@@ -324,7 +365,10 @@ export class TheaterUI {
     if (inside && this.mode !== 'private' && p.converting) {
       this._localDecodeFail = false;
       this.showCodecBanner(
-        p.codecTip || 'Converting video for Discord… keep the host tab open.'
+        p.codecTip ||
+          (p.feedStatus === 'streaming' || p.feedStatus === 'stalled'
+            ? 'Uploading MovieBox/large file… Discord stream builds after upload (black screen avoided). Keep the host tab open.'
+            : 'Building Discord-safe HLS… keep the host tab open.')
       );
     } else if (inside && this.mode !== 'private' && p.codecTip) {
       this.showCodecBanner(p.codecTip);
@@ -716,11 +760,12 @@ export class TheaterUI {
   }
 
   floatEmoji(emoji) {
+    if (!this._fxEnabled) return;
     const e = document.createElement('div');
     e.className = 'float-emoji';
     e.textContent = emoji;
     e.style.left = 20 + Math.random() * 60 + '%';
-    this.root.querySelector('.stage').appendChild(e);
+    (this.root.querySelector('#float-layer') || this.root.querySelector('.stage'))?.appendChild(e);
     setTimeout(() => e.remove(), 1600);
   }
 
@@ -808,27 +853,151 @@ export class TheaterUI {
     el.innerHTML = '';
   }
 
+  // ---- Fullscreen (native + cinema fallback for Discord iframe) ------------
   toggleFullscreen() {
-    const frame = this.root.querySelector('.screen') || this.root.querySelector('#theater-video')?.parentElement;
+    // Prefer native Fullscreen API when the Discord Activity allows it.
+    // Many Discord clients block it — fall back to CSS "cinema" mode that
+    // fills the Activity viewport (hides seats/chrome, expands the screen).
+    const frame =
+      this.root.querySelector('#theater-screen') ||
+      this.root.querySelector('.screen') ||
+      this.root.querySelector('#theater-video')?.parentElement;
     if (!frame) return;
-    if (!document.fullscreenElement) {
-      frame.requestFullscreen?.().catch(() => this.toast('Fullscreen not available in this Discord client'));
-    } else {
-      document.exitFullscreen?.();
+
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.().catch(() => {});
+      this.setCinemaFullscreen(false);
+      return;
+    }
+    if (this._cinemaFs) {
+      this.setCinemaFullscreen(false);
+      return;
+    }
+
+    const req =
+      frame.requestFullscreen?.bind(frame) ||
+      frame.webkitRequestFullscreen?.bind(frame) ||
+      frame.webkitRequestFullScreen?.bind(frame);
+    const video = this.videoEl;
+    const iosReq = video?.webkitEnterFullscreen?.bind(video);
+
+    if (req) {
+      Promise.resolve(req())
+        .then(() => this._syncFsButton())
+        .catch(() => {
+          // Discord iframe often rejects — cinema mode still works.
+          this.setCinemaFullscreen(true);
+          this.toast('Cinema mode on (Discord blocks native fullscreen)');
+        });
+      return;
+    }
+    if (iosReq) {
+      try {
+        iosReq();
+        return;
+      } catch {
+        /* fall through */
+      }
+    }
+    this.setCinemaFullscreen(true);
+    this.toast('Cinema mode on');
+  }
+
+  setCinemaFullscreen(on) {
+    this._cinemaFs = Boolean(on);
+    this.root.querySelector('.stage')?.classList.toggle('cinema-fs', this._cinemaFs);
+    document.body.classList.toggle('cinema-fs', this._cinemaFs);
+    this._syncFsButton();
+  }
+
+  _syncFsButton() {
+    const btn = this.root.querySelector('#btn-fullscreen');
+    if (!btn) return;
+    const on = Boolean(document.fullscreenElement) || this._cinemaFs;
+    btn.textContent = on ? '⛶' : '⛶';
+    btn.classList.toggle('active', on);
+    btn.title = on ? 'Exit fullscreen' : 'Fullscreen';
+  }
+
+  // ---- Screen FX toggle ----------------------------------------------------
+  toggleFx() {
+    this._fxEnabled = !this._fxEnabled;
+    prefs.setFxEnabled(this._fxEnabled);
+    this.applyFxPref();
+    this.toast(this._fxEnabled ? '✨ Screen animations on' : '✨ Screen animations off');
+  }
+
+  applyFxPref() {
+    this._fxEnabled = prefs.fxEnabled;
+    this.root.querySelector('.stage')?.classList.toggle('fx-off', !this._fxEnabled);
+    const btn = this.root.querySelector('#btn-fx');
+    if (btn) {
+      btn.classList.toggle('active', this._fxEnabled);
+      btn.title = this._fxEnabled ? 'Turn off screen animations' : 'Turn on screen animations';
+      btn.textContent = this._fxEnabled ? '✨' : '💤';
+    }
+  }
+
+  // ---- Concession mini-game (Phaser, lazy-loaded) --------------------------
+  async toggleConcession(forceOpen = false) {
+    const dock = this.root.querySelector('#concession-dock');
+    if (!dock) return;
+    if (this._concession && !forceOpen) {
+      this._concession.destroy();
+      this._concession = null;
+      this.root.querySelector('#btn-concession')?.classList.remove('active');
+      return;
+    }
+    if (this._concession) return;
+    this.root.querySelector('#btn-concession')?.classList.add('active');
+    this.toast('🍿 Opening concession…');
+    try {
+      const { openConcession } = await import('./concession.js');
+      this._concession = await openConcession(dock, {
+        mode: 'soda',
+        onClose: () => {
+          this._concession = null;
+          this.root.querySelector('#btn-concession')?.classList.remove('active');
+        },
+      });
+      this.toast('🍿 Concession open — movie keeps playing');
+    } catch (err) {
+      this.root.querySelector('#btn-concession')?.classList.remove('active');
+      this.toast('⚠️ Could not load concession game');
+      console.warn('concession', err);
     }
   }
 
   floatReact(kind) {
-    const map = { popcorn: '🍿', cheer: '👏', boo: '👻' };
-    const emoji = map[kind] || '✨';
+    if (!this._fxEnabled) return;
+    const def = REACTS.find((r) => r.key === kind);
+    const emoji = def?.emoji || '✨';
     const layer = this.root.querySelector('#float-layer') || this.root.querySelector('.stage');
-    const e = document.createElement('div');
-    e.className = 'float-react';
-    e.textContent = emoji;
-    e.style.left = 15 + Math.random() * 70 + '%';
-    e.style.bottom = '12%';
-    layer.appendChild(e);
-    setTimeout(() => e.remove(), 1800);
+    if (!layer) return;
+
+    // Popcorn / soda / candy get a throwy arc; ghost & others float up.
+    const count = def?.throwy || kind === 'soda' || kind === 'candy' ? 5 : 1;
+    for (let i = 0; i < count; i++) {
+      const e = document.createElement('div');
+      e.className = def?.throwy || kind === 'soda' || kind === 'candy' ? 'float-react throw' : 'float-react';
+      e.textContent = emoji;
+      e.style.left = 10 + Math.random() * 80 + '%';
+      e.style.bottom = 8 + Math.random() * 18 + '%';
+      e.style.setProperty('--dx', `${(Math.random() * 80 - 40) | 0}px`);
+      e.style.setProperty('--rot', `${(Math.random() * 80 - 40) | 0}deg`);
+      e.style.animationDelay = `${i * 60}ms`;
+      layer.appendChild(e);
+      setTimeout(() => e.remove(), 2000 + i * 60);
+    }
+
+    // Little ghost wiggle on the screen corner for boo
+    if (kind === 'boo' || kind === 'ghost') {
+      const g = document.createElement('div');
+      g.className = 'screen-ghost';
+      g.textContent = '👻';
+      this.root.querySelector('#theater-screen')?.appendChild(g);
+      setTimeout(() => g.remove(), 2200);
+    }
   }
 
 }
