@@ -66,6 +66,9 @@ export class SyncClient extends EventTarget {
   giveItem(item) {
     this.send({ type: 'item', item });
   }
+  enter(opts = {}) {
+    this.send({ type: 'enter', seat: opts.seat, items: opts.items || [] });
+  }
 
   close() {
     this._closedByUs = true;

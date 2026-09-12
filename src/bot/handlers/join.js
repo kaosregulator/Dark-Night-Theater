@@ -254,7 +254,7 @@ async function watchMovie(interaction, ch) {
   picks.delete(keyOf(interaction, ch));
   await interaction.editReply(
     url
-      ? `🎬 **Enjoy the show!** Open the Theater in <#${ch}>:\n${url}`
+      ? `🎬 **Enjoy the show!** Open the Theater in <#${ch}>:\n${url}\n\n_You'll arrive outside — press **Enter Theater** to grab a seat and sync to the movie._`
       : '⚠️ Couldn’t create the Theater link — the bot needs **Create Instant Invite** in that channel.'
   );
 }

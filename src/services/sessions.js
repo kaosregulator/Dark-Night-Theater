@@ -45,7 +45,7 @@ function createRoom(channelId) {
     hostId: null,
     mode: 'idle', // 'idle' | 'clan'
     playback: emptyPlayback(),
-    participants: new Map(), // userId -> { id, name, avatar, seat, items[] }
+    participants: new Map(), // userId -> { id, name, avatar, seat, items[], inside }
     controlMessage: null, // { channelId, messageId } of the text-channel control embed
   };
   rooms.set(channelId, room);
@@ -105,15 +105,41 @@ export function join(channelId, user) {
     const free = pref != null && ![...room.participants.values()].some((p) => p.seat === pref);
     if (free) seat = pref;
   }
+  // Host (or anyone already inside) stays inside across reconnects. Everyone
+  // else starts in the foyer so they don't see the movie until they Enter.
+  const isHost = room.hostId === user.id;
+  const inside = existing?.inside === true || (isHost && room.mode === 'clan');
   room.participants.set(user.id, {
     id: user.id,
     name: user.name,
     avatar: user.avatar || null,
     seat,
     items: existing?.items ?? [],
+    inside,
   });
-  broadcast(room, { event: { type: 'join', user: { id: user.id, name: user.name } } });
+  broadcast(room, { event: { type: 'join', user: { id: user.id, name: user.name, inside } } });
   return room;
+}
+
+// Audience finished the foyer / join ritual — seat them and let the movie through.
+export function enterTheater(channelId, userId, { seat, items } = {}) {
+  const room = getRoom(channelId);
+  const p = room.participants.get(userId);
+  if (!p) return { ok: false, reason: 'Not in this theater yet.' };
+  if (room.mode !== 'clan' || !room.playback.videoUid) {
+    return { ok: false, reason: 'No movie is playing right now.' };
+  }
+  p.inside = true;
+  if (Array.isArray(items) && items.length) {
+    p.items = [...new Set([...(p.items || []), ...items.filter(Boolean)])];
+  }
+  if (seat != null && Number.isFinite(Number(seat))) {
+    const want = Number(seat);
+    const taken = [...room.participants.values()].some((o) => o.seat === want && o.id !== userId);
+    if (!taken) p.seat = want;
+  }
+  broadcast(room, { event: { type: 'enter', user: { id: userId, name: p.name } } });
+  return { ok: true };
 }
 
 // Active watch parties (clan movie loaded) — the /join audience board reads this.
@@ -122,13 +148,14 @@ export function listActiveRooms(guildId) {
   for (const room of rooms.values()) {
     if (room.mode !== 'clan' || !room.playback.videoUid) continue;
     if (guildId && room.guildId !== guildId) continue;
+    const inside = [...room.participants.values()].filter((x) => x.inside).length;
     out.push({
       channelId: room.channelId,
       guildId: room.guildId,
       hostId: room.hostId,
       videoUid: room.playback.videoUid,
       videoName: room.playback.videoName,
-      viewers: room.participants.size,
+      viewers: inside || room.participants.size,
       playing: room.playback.playing,
     });
   }
@@ -170,6 +197,8 @@ export function giveItem(channelId, userId, item) {
 export function setHost(channelId, userId) {
   const room = getRoom(channelId);
   room.hostId = userId;
+  const p = room.participants.get(userId);
+  if (p && room.mode === 'clan') p.inside = true;
   broadcast(room);
 }
 
@@ -210,6 +239,10 @@ export function startClanMovie(channelId, { hostId, guildId, video, playback }) 
     updatedAt: Date.now(),
     locked: true,
   };
+  // Host is already "in the theater"; everyone else stays in the foyer until Enter.
+  for (const p of room.participants.values()) {
+    p.inside = p.id === hostId;
+  }
   broadcast(room, { event: { type: 'movie', video: { uid: video.uid, name: video.name } } });
   return room;
 }
@@ -257,6 +290,7 @@ export function control(channelId, by, action, value) {
     case 'end':
       room.mode = 'idle';
       room.playback = emptyPlayback();
+      for (const p of room.participants.values()) p.inside = false;
       broadcast(room, { event: { type: 'ended' } });
       return { ok: true };
     default:
