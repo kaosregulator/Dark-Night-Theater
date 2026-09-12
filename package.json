@@ -23,6 +23,7 @@
     "express": "^4.21.2",
     "gifenc": "^1.0.3",
     "hls.js": "^1.7.3",
+    "phaser": "^4.2.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {
