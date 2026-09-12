@@ -729,7 +729,7 @@ export class TheaterUI {
     el.textContent = '▶ Tap to start';
     el.classList.remove('hidden');
     el.onclick = async () => {
-      // Keep the overlay until play() actually succeeds — otherwise users
+      // Keep the overlay until play() actually paints frames — otherwise users
       // get a black screen with no way to retry.
       el.textContent = '⏳ Starting…';
       let ok = false;
@@ -739,8 +739,17 @@ export class TheaterUI {
         ok = false;
       }
       if (ok) el.classList.add('hidden');
+      else el.classList.remove('hidden');
       el.textContent = '▶ Tap to start';
     };
+  }
+
+  hideTapToPlay() {
+    const el = this.root.querySelector('#tap-to-play');
+    if (!el) return;
+    el.classList.add('hidden');
+    el.textContent = '▶ Tap to start';
+    el.onclick = null;
   }
 
   showTapToUnmute(onTap) {
