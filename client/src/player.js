@@ -40,6 +40,11 @@ export class TheaterPlayer {
     this._wantUnmute = false;
     this._pendingSeek = null;
     this._started = false;
+    // After MEDIA_ERR_SRC_NOT_SUPPORTED the element must be hard-reset before
+    // the same /tmedia/:id (now serving converted H.264) can load again.
+    this._hadMediaError = false;
+    this._awaitingConversion = false;
+    this._converting = false;
 
     // Critical for Discord iframe / mobile WebViews.
     this.video.playsInline = true;
@@ -54,24 +59,58 @@ export class TheaterPlayer {
     this.video.addEventListener('loadeddata', () => {
       this._armPaintWatch();
       this._flushPendingSeek();
+      // Clear codec UI even when paused (media-ready often arrives while paused).
+      if (!this.video.error && this.video.readyState >= 2) {
+        this._hadMediaError = false;
+        this.onLocalControl({ type: 'decode-ok' });
+      }
     });
     this.video.addEventListener('canplay', () => this._flushPendingSeek());
     this.video.addEventListener('progress', () => this._flushPendingSeek());
     this.video.addEventListener('emptied', () => this._clearPaintWatch());
   }
 
-  load({ uid, hls, dash, src, kind, revision }) {
+  load({ uid, hls, dash, src, kind, revision, converting = false }) {
+    const rev = revision ?? null;
+    // Conversion finished or failed — must leave the awaiting guard even if
+    // mediaRevision did not bump (failure path only updates meta).
+    const leavingConversion = this._awaitingConversion && !converting;
     const same =
+      !leavingConversion &&
       this.currentUid === uid &&
-      this.mediaRevision === (revision ?? null) &&
-      (this.hls || this.video.src);
+      this.mediaRevision === rev &&
+      (this.hls || this.video.src || this._awaitingConversion);
     if (same) return;
+
     this.currentUid = uid;
-    this.mediaRevision = revision ?? null;
+    this.mediaRevision = rev;
     this._started = false;
     this._pendingSeek = null;
-    this._destroyHls();
+    this._converting = Boolean(converting);
     this._clearPaintWatch();
+
+    // While the server re-encodes HEVC/AC-3, do not attach the incompatible
+    // original — that causes MEDIA_ERR_SRC_NOT_SUPPORTED and a sticky fatal UI.
+    if (converting && kind === 'file' && !hls && !dash) {
+      this._awaitingConversion = true;
+      this._hardResetMedia();
+      this.onLocalControl({
+        type: 'converting',
+        detail: 'Converting video for Discord…',
+      });
+      return;
+    }
+
+    this._awaitingConversion = false;
+    // Always hard-reset when leaving conversion or recovering from MEDIA_ERR so
+    // Chromium re-fetches /tmedia/:id (same URL, new H.264 bytes).
+    const needsHardReset =
+      leavingConversion || this._hadMediaError || Boolean(this.video.error);
+    if (needsHardReset) {
+      this._hardResetMedia();
+    } else {
+      this._destroyHls();
+    }
 
     // Local file (MP4/WebM) served with range support — just point <video> at it.
     if (kind === 'file' && src) {
@@ -95,6 +134,7 @@ export class TheaterPlayer {
       h.attachMedia(this.video);
       h.on(Hls.Events.ERROR, (_e, data) => {
         if (data?.fatal) {
+          this._hadMediaError = true;
           this.onLocalControl({
             type: 'decode-fail',
             detail: 'Stream error — wait for the host convert to finish, or re-host as H.264 + AAC.',
@@ -107,6 +147,25 @@ export class TheaterPlayer {
     } else if (dash) {
       this.video.src = withRevision(dash, this.mediaRevision);
     }
+  }
+
+  // Fully reset a failed <video> so the next src (same /tmedia path, new bytes) fetches.
+  _hardResetMedia() {
+    try {
+      this.video.pause();
+    } catch {
+      /* ignore */
+    }
+    this._destroyHls();
+    try {
+      this.video.removeAttribute('src');
+      this.video.srcObject = null;
+      while (this.video.firstChild) this.video.removeChild(this.video.firstChild);
+      this.video.load?.();
+    } catch {
+      /* ignore */
+    }
+    this._hadMediaError = false;
   }
 
   _destroyHls() {
@@ -147,15 +206,25 @@ export class TheaterPlayer {
   }
 
   _onMediaError() {
+    this._hadMediaError = true;
+    // Soft-fail while the server is still converting — not a permanent codec error.
+    if (this._converting || this._awaitingConversion) {
+      this.onLocalControl({
+        type: 'converting',
+        detail: 'Converting video for Discord…',
+      });
+      return;
+    }
     const err = this.video.error;
     const code = err?.code;
     let detail = 'Could not decode this movie in Discord’s browser.';
-    if (code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED || code === 4) {
+    // Prefer numeric codes — MediaError globals are missing in some embeds/tests.
+    if (code === 4 /* MEDIA_ERR_SRC_NOT_SUPPORTED */) {
       detail =
         'This file’s codecs aren’t supported here. Re-export as MP4 H.264 video + AAC audio (HandBrake “Fast 1080p30”), or wait for the server convert to finish.';
-    } else if (code === MediaError.MEDIA_ERR_NETWORK || code === 2) {
+    } else if (code === 2 /* MEDIA_ERR_NETWORK */) {
       detail = 'Network error loading the stream — keep the host tab open and tap Play again.';
-    } else if (code === MediaError.MEDIA_ERR_DECODE || code === 3) {
+    } else if (code === 3 /* MEDIA_ERR_DECODE */) {
       detail =
         'Decode failed (often H.265/HEVC or AC-3 in an .mp4 wrapper). Re-encode to H.264 + AAC, or wait for auto-convert.';
     }
@@ -270,15 +339,17 @@ export class TheaterPlayer {
   applyState(playback) {
     if (!playback?.videoUid) return;
 
+    this._converting = Boolean(playback.converting);
+
     // Show converting tip early (before media is ready).
     if (playback.converting) {
       this.onLocalControl({
         type: 'converting',
-        detail: playback.codecTip || 'Converting to Discord-safe H.264…',
+        detail: playback.codecTip || 'Converting video for Discord…',
       });
     }
 
-    if (playback.src || playback.hls || playback.dash) {
+    if (playback.src || playback.hls || playback.dash || playback.converting) {
       this.load({
         uid: playback.videoUid,
         hls: playback.hls,
@@ -286,7 +357,13 @@ export class TheaterPlayer {
         src: playback.src,
         kind: playback.kind,
         revision: playback.mediaRevision ?? 0,
+        converting: Boolean(playback.converting),
       });
+    }
+
+    // While awaiting conversion there is no media clock yet — skip seek/play.
+    if (this._awaitingConversion) {
+      return;
     }
 
     // Prefer the true anchor (positionAtUpdate + updatedAt). Falling back to
@@ -329,6 +406,9 @@ export class TheaterPlayer {
     this.mediaRevision = null;
     this._pendingSeek = null;
     this._started = false;
+    this._hadMediaError = false;
+    this._awaitingConversion = false;
+    this._converting = false;
     try {
       this.video.pause();
     } catch {

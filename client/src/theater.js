@@ -320,9 +320,18 @@ export class TheaterUI {
     }
 
     // Codec / black-screen guidance from server probe (MovieBox HEVC, AC-3, etc.).
-    if (inside && this.mode !== 'private' && p.codecTip) {
+    // While converting, prefer the converting message — never leave a sticky fatal banner.
+    if (inside && this.mode !== 'private' && p.converting) {
+      this._localDecodeFail = false;
+      this.showCodecBanner(
+        p.codecTip || 'Converting video for Discord… keep the host tab open.'
+      );
+    } else if (inside && this.mode !== 'private' && p.codecTip) {
       this.showCodecBanner(p.codecTip);
     } else if (!this._localDecodeFail) {
+      this.hideCodecBanner();
+    } else if (inside && this.mode !== 'private' && p.webPlayable && !p.converting) {
+      // Convert finished — clear any decode-fail left over from the original file.
       this.hideCodecBanner();
     }
 
