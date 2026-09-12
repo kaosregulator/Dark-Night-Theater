@@ -147,9 +147,20 @@ async function boot() {
     menu();
   });
 
+  const tryStartPlayback = async () => {
+    const pb = sync.snapshot?.playback;
+    if (pb?.converting) {
+      ui.hideTapToPlay();
+      ui.showCodecBanner(pb.codecTip || 'Converting video for Discord…');
+      return false;
+    }
+    if (pb) player.applyState(pb);
+    return player.unlockAndPlay({ unmute: true });
+  };
+
   player.onLocalControl = (e) => {
     if (e.type === 'needs-gesture') {
-      ui.showTapToPlay(() => player.unlockAndPlay({ unmute: true }));
+      ui.showTapToPlay(() => tryStartPlayback());
     } else if (e.type === 'needs-unmute') {
       ui.showTapToUnmute(() => {
         player.video.muted = false;
@@ -157,16 +168,19 @@ async function boot() {
     } else if (e.type === 'decode-fail') {
       // Never treat codec errors as fatal while the server is still converting.
       if (sync.snapshot?.playback?.converting) {
+        ui.hideTapToPlay();
         ui.showCodecBanner(
           sync.snapshot.playback.codecTip || 'Converting video for Discord…'
         );
         return;
       }
       ui.showDecodeFail(e.detail);
-      ui.showTapToPlay(() => player.unlockAndPlay({ unmute: true }));
+      ui.showTapToPlay(() => tryStartPlayback());
     } else if (e.type === 'converting') {
+      ui.hideTapToPlay();
       ui.showCodecBanner(e.detail || 'Converting video for Discord…');
     } else if (e.type === 'decode-ok') {
+      ui.hideTapToPlay();
       if (!sync.snapshot?.playback?.codecTip && !sync.snapshot?.playback?.converting) {
         ui.hideCodecBanner();
       }
@@ -233,10 +247,14 @@ async function boot() {
       // force TheaterPlayer to honor the new mediaRevision (hard-resets if needed).
       if (pb && !pb.converting) {
         ui.hideCodecBanner();
-        ui.toast('✅ Discord-safe stream ready');
+        ui.toast('✅ Discord-safe stream ready — tap ▶ to play');
       }
       if (!menuOpen && amInside(sync.snapshot) && pb) {
         player.applyState(pb);
+        // Discord blocks unmuted autoplay — always offer a fresh gesture after convert.
+        if (!pb.converting) {
+          ui.showTapToPlay(() => tryStartPlayback());
+        }
       }
     }
   });
