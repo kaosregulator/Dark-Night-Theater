@@ -4,7 +4,7 @@
   "description": "DarkNight Home Theater — a Discord-native social movie theater Activity that streams movies from your own device/files.",
   "type": "module",
   "engines": {
-    "node": ">=18.17"
+    "node": ">=22"
   },
   "scripts": {
     "start": "node src/index.js",

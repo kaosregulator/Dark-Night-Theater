@@ -1,5 +1,8 @@
-# Railway / Nixpacks build. Install ffmpeg for MP4 probe + faststart remux,
-# build the Activity frontend, then start the server.
+# Railway / Nixpacks build. Use Node 22+ so sharp can load, install ffmpeg for
+# MP4 probe + faststart remux, build the Activity frontend, then start.
+[variables]
+NIXPACKS_NODE_VERSION = "22"
+
 [phases.setup]
 nixPkgs = ["ffmpeg"]
 
