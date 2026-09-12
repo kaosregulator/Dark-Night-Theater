@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import express from 'express';
 import * as temp from '../../media/temp.js';
 import { MIME } from '../../media/store.js';
@@ -7,14 +8,17 @@ import { verifyMediaToken } from '../../media/token.js';
 // Streams a TEMPORARY per-party session file with HTTP range support — and does
 // so *while the file is still uploading*. Seeking ahead of the uploaded position
 // waits (briefly) for bytes to arrive; seeking behind is instant.
-// After a Discord-safe transcode finishes, prefer session.webFile (H.264/AAC).
+//
+// After a Discord-safe convert starts, prefer live HLS under
+// /tmedia/:id/index.m3u8 + /tmedia/:id/segXXXXX.ts (small full-file GETs —
+// Discord's Activity proxy is much happier with those than giant range MP4s).
 export const tmedia = express.Router();
 
 const MAX_CHUNK = 4 * 1024 * 1024;
 const typeFor = (ext) => MIME[ext] || 'application/octet-stream';
 
 function openFile(session) {
-  // Prefer the Discord-safe transcode when ready.
+  // Prefer a finished progressive web MP4 when present (library-style path).
   if (session.webFile && fs.existsSync(session.webFile)) {
     const size = fs.statSync(session.webFile).size;
     return { path: session.webFile, ext: '.mp4', size, complete: true };
@@ -32,12 +36,84 @@ function openFile(session) {
   };
 }
 
+function sendWhole(res, filePath, contentType, isHead) {
+  const size = fs.statSync(filePath).size;
+  res.status(200);
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Length', size);
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  if (isHead) return res.end();
+  return fs.createReadStream(filePath).pipe(res);
+}
+
+// Rewrite playlist segment lines so Discord/hls.js keep the media token.
+function rewritePlaylist(raw, token) {
+  return String(raw)
+    .split('\n')
+    .map((line) => {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) return line;
+      if (/\.ts($|\?)/i.test(t) || t.endsWith('.m4s')) {
+        const base = t.split('?')[0];
+        return `${base}?t=${encodeURIComponent(token)}`;
+      }
+      return line;
+    })
+    .join('\n');
+}
+
+// ---- HLS: playlist ---------------------------------------------------------
+tmedia.get('/:id/index.m3u8', (req, res) => {
+  const { id } = req.params;
+  if (!verifyMediaToken(id, req.query.t)) return res.status(403).end('Forbidden');
+  const session = temp.find(id);
+  if (!session?.hlsDir) return res.status(404).end('Not found');
+  const playlist = path.join(session.hlsDir, 'index.m3u8');
+  if (!fs.existsSync(playlist)) return res.status(404).end('Not ready');
+  temp.touch(session);
+  const raw = fs.readFileSync(playlist, 'utf8');
+  const body = rewritePlaylist(raw, req.query.t);
+  res.status(200);
+  res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.send(body);
+});
+
+// ---- HLS: segments ---------------------------------------------------------
+tmedia.get('/:id/:seg', (req, res) => {
+  const { id, seg } = req.params;
+  // Don't steal the bare /:id progressive route — only real segment names.
+  if (!/^(seg\d+\.ts|index\.m3u8)$/i.test(seg) && !/\.ts$/i.test(seg)) {
+    return res.status(404).end('Not found');
+  }
+  if (!verifyMediaToken(id, req.query.t)) return res.status(403).end('Forbidden');
+  const session = temp.find(id);
+  if (!session?.hlsDir) return res.status(404).end('Not found');
+  const safe = path.basename(seg);
+  const filePath = path.join(session.hlsDir, safe);
+  if (!filePath.startsWith(session.hlsDir) || !fs.existsSync(filePath)) {
+    return res.status(404).end('Not found');
+  }
+  temp.touch(session);
+  const ext = path.extname(safe).toLowerCase();
+  return sendWhole(res, filePath, typeFor(ext), req.method === 'HEAD');
+});
+
 async function handle(req, res, isHead) {
   const { id } = req.params;
   if (!verifyMediaToken(id, req.query.t)) return res.status(403).end('Forbidden');
   const session = temp.find(id);
   if (!session || !fs.existsSync(session.file)) return res.status(404).end('Not found');
   temp.touch(session);
+
+  // If live HLS is already published, nudge clients toward the playlist instead
+  // of serving the incompatible original progressive file.
+  if (session.kind === 'hls' && session.hlsDir && fs.existsSync(path.join(session.hlsDir, 'index.m3u8'))) {
+    const token = req.query.t;
+    return res.redirect(302, `/tmedia/${id}/index.m3u8?t=${encodeURIComponent(token)}`);
+  }
 
   const f = openFile(session);
   const total = f.complete ? f.size : Math.max(f.size || 0, f.available || 0);

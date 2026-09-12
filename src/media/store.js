@@ -27,6 +27,7 @@ const MIME = {
   '.ogg': 'video/ogg',
   '.ogv': 'video/ogg',
   '.m3u8': 'application/vnd.apple.mpegurl',
+  '.ts': 'video/mp2t',
 };
 const NON_WEB = new Set(['.mkv', '.avi', '.wmv', '.flv', '.ts']);
 const VIDEO_EXTS = new Set([...Object.keys(MIME), ...NON_WEB]);

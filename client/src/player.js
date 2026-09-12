@@ -100,7 +100,7 @@ export class TheaterPlayer {
       this._hardResetMedia();
       this.onLocalControl({
         type: 'converting',
-        detail: 'Converting video for Discord…',
+        detail: 'Building Discord stream… first minutes unlock shortly',
       });
       return;
     }
@@ -130,9 +130,14 @@ export class TheaterPlayer {
         maxMaxBufferLength: 120,
         enableWorker: true,
         startLevel: -1,
+        // Live/EVENT playlists grow while ffmpeg is still encoding the movie.
+        liveDurationInfinity: true,
+        liveSyncDurationCount: 3,
         // Discord's Activity proxy can stall on large segment bursts.
         fragLoadingTimeOut: 20000,
         manifestLoadingTimeOut: 20000,
+        manifestLoadingMaxRetry: 8,
+        fragLoadingMaxRetry: 6,
       });
       h.loadSource(withRevision(manifest, this.mediaRevision));
       h.attachMedia(this.video);
@@ -260,7 +265,7 @@ export class TheaterPlayer {
     if (this._converting || this._awaitingConversion) {
       this.onLocalControl({
         type: 'converting',
-        detail: 'Converting video for Discord…',
+        detail: 'Building Discord stream… first minutes unlock shortly',
       });
       return;
     }
@@ -351,6 +356,17 @@ export class TheaterPlayer {
   }
 
   // User tapped ▶ — must be called from a click handler.
+
+  _withTimeout(promise, ms, label = 'timeout') {
+    let timer;
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(label)), ms);
+      }),
+    ]).finally(() => clearTimeout(timer));
+  }
+
   async unlockAndPlay({ unmute = true } = {}) {
     const v = this.video;
 
@@ -390,7 +406,9 @@ export class TheaterPlayer {
     const tryPlay = async (wantUnmute) => {
       v.muted = !wantUnmute;
       this._wantUnmute = !wantUnmute;
-      await v.play();
+      // Discord's proxy can hang play() forever on a bad progressive MP4 — never
+      // leave the yellow "Starting…" overlay wedged with no way out.
+      await this._withTimeout(v.play(), 6000, 'play-timeout');
       this._started = true;
       if (wantUnmute) {
         try {
