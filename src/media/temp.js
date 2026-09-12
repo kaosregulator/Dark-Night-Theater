@@ -121,6 +121,11 @@ export function advance(session, n) {
 }
 
 export function finish(session) {
+  // Idempotent: a second finish must not spawn another ffmpeg/HLS job.
+  if (session.complete && (session.prepareStarted || session.hlsChild || session.kind === 'hls')) {
+    session.lastActivity = now();
+    return;
+  }
   session.complete = true;
   try {
     session.total = fs.statSync(session.file).size;
@@ -135,6 +140,8 @@ export function finish(session) {
 }
 
 async function prepareForWeb(session) {
+  if (session.prepareStarted) return;
+  session.prepareStarted = true;
   const { probeFile, faststartRemux, codecTip, logProbe } = await import('./probe.js');
   // Relocate moov to the front when possible (copy remux — no quality loss).
   const remux = await faststartRemux(session.file);
@@ -188,6 +195,11 @@ async function prepareForWeb(session) {
       const handle = startLiveHls(session.file, hlsDir, {
         maxHeight: 720,
         onReady: () => {
+          if (session.hlsReady) {
+            finish();
+            return;
+          }
+          session.hlsReady = true;
           session.hlsPlaylist = path.join(hlsDir, 'index.m3u8');
           session.webPlayable = true;
           session.codecTip = null;

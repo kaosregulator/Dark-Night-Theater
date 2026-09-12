@@ -92,8 +92,10 @@ tmedia.get('/:id/:seg', (req, res) => {
   const session = temp.find(id);
   if (!session?.hlsDir) return res.status(404).end('Not found');
   const safe = path.basename(seg);
-  const filePath = path.join(session.hlsDir, safe);
-  if (!filePath.startsWith(session.hlsDir) || !fs.existsSync(filePath)) {
+  // Resolve + containment check so ../ or weird encodings cannot escape hlsDir.
+  const root = path.resolve(session.hlsDir);
+  const filePath = path.resolve(root, safe);
+  if (filePath !== path.join(root, safe) || !fs.existsSync(filePath)) {
     return res.status(404).end('Not found');
   }
   temp.touch(session);
