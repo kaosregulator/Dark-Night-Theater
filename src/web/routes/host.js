@@ -177,9 +177,10 @@ host.get('/api/host/session/:id/probe', (req, res) => {
     exists: true,
     complete: session.complete,
     webPlayable: session.webPlayable !== false,
-    converting: Boolean(session.converting) || Boolean(session.webFile === undefined && session.probe && !session.probe.webPlayable),
+    converting: Boolean(session.converting),
     codecTip: session.codecTip || null,
-    webReady: Boolean(session.webFile),
+    webReady: Boolean(session.webFile) || Boolean(session.kind === 'hls' && session.hlsDir),
+    streamKind: session.kind || 'file',
     probe: session.probe
       ? {
           videoCodec: session.probe.videoCodec,
@@ -302,7 +303,7 @@ const keyEl=$('#key');
 if(S){ // session mode: opened from /watch — no key, auto-start the party
   $('#keywrap').style.display='none';
   $('#listwrap').style.display='none';
-  $('#mode').innerHTML='Pick a movie from this device — the party <b>starts right away</b> and it streams while it uploads. Your file stays on your device; the server copy is temporary and deleted when the party ends. <b>Keep this tab open</b> while watching.<br><br><b>Must be Discord-safe:</b> MP4 with <b>H.264 + AAC</b> (or WebM). Even width/height (1920×1080). <b>.mp4 alone is not enough</b> — MovieBox/HEVC/H.265 files play black in Activities. HandBrake preset “Fast 1080p30” works.';
+  $('#mode').innerHTML='Pick a movie from this device — the party <b>starts right away</b> and it streams while it uploads. Your file stays on your device; the server copy is temporary and deleted when the party ends. <b>Keep this tab open</b> while watching.<br><br><b>Must be Discord-safe:</b> MP4 with <b>H.264 + AAC</b> (or WebM). Even width/height (1920×1080). <b>.mp4 alone is not enough</b> — MovieBox/HEVC/H.265 used to play black — the server now auto-builds a Discord HLS stream after upload so playback can start before the whole movie finishes converting. HandBrake “Fast 1080p30” is still the fastest path.';
 } else {
   keyEl.value=localStorage.getItem('dnkey')||'';
   keyEl.onchange=()=>{localStorage.setItem('dnkey',keyEl.value);refresh();};
@@ -369,12 +370,12 @@ async function pollProbe(n){
     const r=await fetch('/api/host/session/'+SID+'/probe?s='+encodeURIComponent(S)).then(x=>x.json());
     if(!r.exists){ setStatus('The party has ended.'); return; }
     if(r.converting && !r.webReady){
-      setStatus(hostMsg+'<br><small>⚙️ Converting to Discord-safe H.264 + AAC… large files can take several minutes. Keep this tab open.</small>');
+      setStatus(hostMsg+'<br><small>⚙️ Building Discord HLS stream… first segments unlock the Theater soon (full-movie encode continues in background). Keep this tab open.</small>');
       setTimeout(()=>pollProbe(n+1),2500);
       return;
     }
     if(r.webReady || r.probe){
-      let msg=hostMsg+'<br><small>✅ Ready'+(r.probe?(' · '+esc(r.probe.videoCodec||'?')+' / '+esc(r.probe.audioCodec||'?')+' · '+(r.probe.width||'?')+'×'+(r.probe.height||'?')):'')+'</small>';
+      let msg=hostMsg+'<br><small>✅ '+(r.streamKind==='hls'?'Discord stream ready (HLS)':'Ready')+''+(r.probe?(' · '+esc(r.probe.videoCodec||'?')+' / '+esc(r.probe.audioCodec||'?')+' · '+(r.probe.width||'?')+'×'+(r.probe.height||'?')):'')+'</small>';
       if(r.codecTip) msg+='<br><small style="color:#ffb0b0">⚠️ '+esc(r.codecTip)+'</small>';
       else if(r.webPlayable===false) msg+='<br><small style="color:#ffb0b0">⚠️ This file likely won’t paint in Discord — re-encode to H.264 + AAC.</small>';
       else msg+='<br><small>Open the Theater and press ▶ if it isn’t already playing.</small>';

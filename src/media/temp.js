@@ -121,6 +121,11 @@ export function advance(session, n) {
 }
 
 export function finish(session) {
+  // Idempotent: a second finish must not spawn another ffmpeg/HLS job.
+  if (session.complete && (session.prepareStarted || session.hlsChild || session.kind === 'hls')) {
+    session.lastActivity = now();
+    return;
+  }
   session.complete = true;
   try {
     session.total = fs.statSync(session.file).size;
@@ -135,6 +140,8 @@ export function finish(session) {
 }
 
 async function prepareForWeb(session) {
+  if (session.prepareStarted) return;
+  session.prepareStarted = true;
   const { probeFile, faststartRemux, codecTip, logProbe } = await import('./probe.js');
   // Relocate moov to the front when possible (copy remux — no quality loss).
   const remux = await faststartRemux(session.file);
@@ -156,7 +163,7 @@ async function prepareForWeb(session) {
     setPlaybackMeta(session.channelId, {
       webPlayable: needsConvert ? false : session.webPlayable,
       codecTip: needsConvert
-        ? 'Converting this file to Discord-safe H.264 + AAC… keep the host tab open. The Theater will reload when ready.'
+        ? 'Building a Discord-safe stream… playback unlocks after the first segments (you do not wait for the whole movie to finish converting).'
         : session.codecTip || null,
       videoCodec: info?.videoCodec || null,
       audioCodec: info?.audioCodec || null,
@@ -168,43 +175,82 @@ async function prepareForWeb(session) {
 
   if (!needsConvert) return;
 
-  // MovieBox / rip MP4s often use HEVC or AC-3 — Discord paints black. Re-encode.
+  // MovieBox / HEVC / AC-3: Discord Activities can't decode HEVC, and the
+  // Activity proxy is flaky with large progressive MP4s. Live HLS publishes
+  // playable segments ASAP so a full movie can start without waiting for the
+  // entire encode to finish.
   try {
-    const { transcodeToWebMp4 } = await import('./transcode.js');
-    const result = await transcodeToWebMp4(session.file, { maxHeight: 1080 });
-    if (!result.ok) {
-      log.warn(`temp ${session.id}: transcode failed — ${result.reason}`);
-      if (session.channelId) {
-        const { setPlaybackMeta } = await import('../services/sessions.js');
-        setPlaybackMeta(session.channelId, {
-          converting: false,
-          webPlayable: false,
-          codecTip:
-            session.codecTip ||
-            'Could not auto-convert this file. Re-export as MP4 H.264 + AAC (HandBrake Fast 1080p30) and host again.',
-          bumpRevision: true,
-        });
-      }
-      return;
-    }
-    // Point the session at the Discord-safe file (keep original for scrub cleanup).
-    session.webFile = result.outPath;
-    session.webPlayable = true;
-    session.codecTip = null;
-    session.converting = false;
-    session.kind = 'file';
-    if (session.channelId) {
-      const { setPlaybackSource } = await import('../services/sessions.js');
-      const playback = getPlayback(session);
-      setPlaybackSource(session.channelId, {
-        src: playback.src,
-        kind: playback.kind,
-        hls: playback.hls,
-        dash: playback.dash,
-        webPlayable: true,
-        codecTip: null,
+    const { startLiveHls } = await import('./transcode.js');
+    const hlsDir = path.join(TMP_DIR, `${session.id}.hls`);
+    session.hlsDir = hlsDir;
+
+    await new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+
+      const handle = startLiveHls(session.file, hlsDir, {
+        maxHeight: 720,
+        onReady: () => {
+          if (session.hlsReady) {
+            finish();
+            return;
+          }
+          session.hlsReady = true;
+          session.hlsPlaylist = path.join(hlsDir, 'index.m3u8');
+          session.webPlayable = true;
+          session.codecTip = null;
+          session.converting = false;
+          session.kind = 'hls';
+          if (session.channelId) {
+            import('../services/sessions.js')
+              .then(({ setPlaybackSource }) => {
+                const playback = getPlayback(session);
+                setPlaybackSource(session.channelId, {
+                  src: playback.src,
+                  kind: 'hls',
+                  hls: playback.hls,
+                  dash: null,
+                  webPlayable: true,
+                  codecTip: null,
+                });
+              })
+              .catch((e) => log.warn('temp media-ready broadcast:', e.message));
+          }
+          // Unlock viewers now — ffmpeg keeps appending segments.
+          finish();
+        },
+        onDone: () => {
+          session.hlsComplete = true;
+          finish();
+        },
+        onError: (err) => {
+          log.warn(`temp ${session.id}: live HLS failed — ${err.message}`);
+          session.converting = false;
+          session.webPlayable = false;
+          if (session.channelId) {
+            import('../services/sessions.js')
+              .then(({ setPlaybackMeta }) => {
+                setPlaybackMeta(session.channelId, {
+                  converting: false,
+                  webPlayable: false,
+                  codecTip:
+                    session.codecTip ||
+                    'Could not auto-convert this MovieBox/HEVC file. Re-export as MP4 H.264 + AAC (HandBrake Fast 1080p30) and host again.',
+                  bumpRevision: true,
+                });
+              })
+              .catch(() => {});
+          }
+          finish();
+        },
       });
-    }
+      session.hlsStop = handle.stop;
+      session.hlsChild = handle.child;
+    });
   } catch (err) {
     log.warn(`temp ${session.id}: transcode error — ${err.message}`);
   }
@@ -241,13 +287,23 @@ export function touch(session) {
 
 // Short-lived, signed, same-origin playback URL for a temp session.
 export function getPlayback(session) {
-  const src = `/tmedia/${session.id}?t=${signMediaToken(session.id)}`;
-  return { src, kind: session.kind, hls: session.kind === 'hls' ? src : null, dash: null, signed: true };
+  const token = signMediaToken(session.id);
+  if (session.kind === 'hls' && session.hlsDir) {
+    const src = `/tmedia/${session.id}/index.m3u8?t=${token}`;
+    return { src, kind: 'hls', hls: src, dash: null, signed: true };
+  }
+  const src = `/tmedia/${session.id}?t=${token}`;
+  return { src, kind: session.kind || 'file', hls: null, dash: null, signed: true };
 }
 
 export function scrub(id) {
   const session = byId.get(id);
   if (!session) return false;
+  try {
+    session.hlsStop?.();
+  } catch {
+    /* ignore */
+  }
   try {
     fs.rmSync(session.file, { force: true });
   } catch (err) {
@@ -256,6 +312,13 @@ export function scrub(id) {
   if (session.webFile) {
     try {
       fs.rmSync(session.webFile, { force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+  if (session.hlsDir) {
+    try {
+      fs.rmSync(session.hlsDir, { recursive: true, force: true });
     } catch {
       /* ignore */
     }
