@@ -93,7 +93,7 @@ export async function handleJoinCommand(interaction) {
   const parties = sessions.listActiveRooms(interaction.guildId);
   if (parties.length === 0) {
     return interaction.reply({
-      content: '🎬 No movie parties are playing right now. A host can start one with **/watch → Host a Movie**.',
+      content: '🎬 No movie parties are playing right now. A host can start one with **/host**, then friends join from the **Activity menu** (or enter the 4-letter room code).',
       ephemeral: true,
     });
   }
@@ -112,7 +112,7 @@ export async function handleJoinCommand(interaction) {
     .addOptions(
       resolved.slice(0, 25).map((p) => ({
         label: (p.videoName || 'Movie').slice(0, 100),
-        description: `Host ${p.hostName} · ${p.viewers} watching · #${p.channelName}`.slice(0, 100),
+                  description: `${p.roomCode ? `Code ${p.roomCode} · ` : ''}Host ${p.hostName} · ${p.viewers} watching · #${p.channelName}`.slice(0, 100),
         value: p.channelId,
       }))
     );

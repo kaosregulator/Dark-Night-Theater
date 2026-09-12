@@ -73,8 +73,8 @@ export async function handleWatchCommand(interaction) {
     const hostRow = hostButtonRow(interaction);
     return interaction.reply({
       content: hostRow
-        ? '📭 No movies yet. Tap **Host a Movie** below to add one from your device and start a party.'
-        : '📭 The library is empty. An admin can add movies at `<your-url>/host`, then run `/library sync`.',
+        ? '📭 No movies yet. Tap **Host a Movie** below — or run **/host** — to upload from your device and start a party.'
+        : '📭 The library is empty. Run **/host** (needs PUBLIC_BASE_URL) or add files and `/library sync`.',
       components: hostRow ? [hostRow] : [],
       ephemeral: true,
     });

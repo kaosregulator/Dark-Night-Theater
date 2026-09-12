@@ -8,8 +8,12 @@ import {
 
 export const commands = [
   new SlashCommandBuilder()
+    .setName('host')
+    .setDescription('Host a movie — open the upload page, then return to the Activity (primary command).'),
+
+  new SlashCommandBuilder()
     .setName('watch')
-    .setDescription('Browse the DarkNight library and start a watch party or private viewing.')
+    .setDescription('Browse the library (optional). Prefer /host + the Activity menu for parties.')
     .addStringOption((o) =>
       o.setName('search').setDescription('Filter by title, description or category').setRequired(false)
     )
@@ -19,11 +23,11 @@ export const commands = [
 
   new SlashCommandBuilder()
     .setName('join')
-    .setDescription('Join an active movie party — pick your seat & snacks, then enter the Theater.'),
+    .setDescription('List parties (optional). Prefer Activity menu → Join / Enter Room Code.'),
 
   new SlashCommandBuilder()
     .setName('theater')
-    .setDescription('Open the Home Theater in your current voice channel and post live controls.'),
+    .setDescription('Post live controls for the current voice-channel party (optional).'),
 
   new SlashCommandBuilder()
     .setName('library')

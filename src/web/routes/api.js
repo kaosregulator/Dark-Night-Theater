@@ -61,6 +61,21 @@ api.post('/playback', (req, res) => {
   res.json({ uid: video.uid, name: video.name, durationSeconds: video.durationSeconds, ...urls });
 });
 
+// Signed /host upload link for the Activity "Host a Movie" button (opens in browser).
+api.post('/host-link', async (req, res) => {
+  const { channelId, guildId, textChannelId } = req.body || {};
+  if (!config.app.baseUrl) return res.status(503).json({ error: 'PUBLIC_BASE_URL not configured' });
+  if (!channelId) return res.status(400).json({ error: 'channelId required' });
+  const { signHostSession } = await import('../../media/token.js');
+  const token = signHostSession({
+    userId: req.user.id,
+    guildId: guildId || null,
+    voiceChannelId: channelId,
+    textChannelId: textChannelId || null,
+  });
+  res.json({ url: `${config.app.baseUrl}/host?s=${encodeURIComponent(token)}` });
+});
+
 // Current room snapshot (Activity fetches this on load; live updates via WS).
 api.get('/session/:channelId', (req, res) => {
   res.json(sessions.snapshot(sessions.getRoom(req.params.channelId)));
