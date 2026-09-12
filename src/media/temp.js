@@ -148,17 +148,64 @@ async function prepareForWeb(session) {
     session.webPlayable = Boolean(info.webPlayable);
     session.codecTip = codecTip(info);
   }
-  // Push codec tip / webPlayable into the live room so the Activity can warn.
+
+  const needsConvert = info?.ok && (!info.webPlayable || info.oddSize);
+  session.converting = needsConvert;
   if (session.channelId) {
     const { setPlaybackMeta } = await import('../services/sessions.js');
     setPlaybackMeta(session.channelId, {
-      webPlayable: session.webPlayable,
-      codecTip: session.codecTip || null,
+      webPlayable: needsConvert ? false : session.webPlayable,
+      codecTip: needsConvert
+        ? 'Converting this file to Discord-safe H.264 + AAC… keep the host tab open. The Theater will reload when ready.'
+        : session.codecTip || null,
       videoCodec: info?.videoCodec || null,
       audioCodec: info?.audioCodec || null,
+      converting: needsConvert,
       // Remux rewrites the file on disk — force Activity players to reload.
       bumpRevision: true,
     });
+  }
+
+  if (!needsConvert) return;
+
+  // MovieBox / rip MP4s often use HEVC or AC-3 — Discord paints black. Re-encode.
+  try {
+    const { transcodeToWebMp4 } = await import('./transcode.js');
+    const result = await transcodeToWebMp4(session.file, { maxHeight: 1080 });
+    if (!result.ok) {
+      log.warn(`temp ${session.id}: transcode failed — ${result.reason}`);
+      if (session.channelId) {
+        const { setPlaybackMeta } = await import('../services/sessions.js');
+        setPlaybackMeta(session.channelId, {
+          converting: false,
+          webPlayable: false,
+          codecTip:
+            session.codecTip ||
+            'Could not auto-convert this file. Re-export as MP4 H.264 + AAC (HandBrake Fast 1080p30) and host again.',
+        });
+      }
+      return;
+    }
+    // Point the session at the Discord-safe file (keep original for scrub cleanup).
+    session.webFile = result.outPath;
+    session.webPlayable = true;
+    session.codecTip = null;
+    session.converting = false;
+    session.kind = 'file';
+    if (session.channelId) {
+      const { setPlaybackSource } = await import('../services/sessions.js');
+      const playback = getPlayback(session);
+      setPlaybackSource(session.channelId, {
+        src: playback.src,
+        kind: playback.kind,
+        hls: playback.hls,
+        dash: playback.dash,
+        webPlayable: true,
+        codecTip: null,
+      });
+    }
+  } catch (err) {
+    log.warn(`temp ${session.id}: transcode error — ${err.message}`);
   }
 }
 
@@ -204,6 +251,13 @@ export function scrub(id) {
     fs.rmSync(session.file, { force: true });
   } catch (err) {
     log.warn('temp scrub:', err.message);
+  }
+  if (session.webFile) {
+    try {
+      fs.rmSync(session.webFile, { force: true });
+    } catch {
+      /* ignore */
+    }
   }
   byId.delete(id);
   if (session.channelId && byChannel.get(session.channelId) === id) byChannel.delete(session.channelId);

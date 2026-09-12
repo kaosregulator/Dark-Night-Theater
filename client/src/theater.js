@@ -45,13 +45,16 @@ export class TheaterUI {
   mount() {
     this.root.innerHTML = `
       <div class="stage">
-        <header class="topbar">
+                <header class="topbar">
           <div class="brand">🎬 <span>DARKNIGHT CINEMA</span></div>
           <div class="meta">
             <span class="badge" id="mode-badge">Lobby</span>
+            <span class="room-code hidden" id="room-code" title="Party code"></span>
             <span class="watchers">👥 <span id="watch-count">0</span></span>
           </div>
           <div class="topbar-actions">
+            <button class="btn" id="btn-menu" title="Main menu">🏠</button>
+            <button class="btn" id="btn-fullscreen" title="Fullscreen">⛶</button>
             <button class="btn" id="btn-lobby">🎞️ Movies</button>
           </div>
         </header>
@@ -70,6 +73,16 @@ export class TheaterUI {
             </div>
             <div class="tap hidden" id="tap-to-play">▶ Tap to start</div>
             <div class="codec-banner hidden" id="codec-banner"></div>
+              <div class="snack-overlay hidden" id="snack-overlay">
+                <div class="snack-card">
+                  <div class="snack-emoji">🍿🥤</div>
+                  <h2>Snack Break!</h2>
+                  <p>Go grab something — the show is paused. Don't miss the good part.</p>
+                </div>
+              </div>
+              <button class="ghost-react" data-react="popcorn" title="Throw popcorn">🍿</button>
+              <button class="ghost-react" data-react="cheer" title="Cheer">👏</button>
+              <button class="ghost-react" data-react="boo" title="Boo (playful)">👻</button>
           </div>
           <div class="now-playing" id="now-playing"></div>
           <div class="feed-note hidden" id="feed-note"></div>
@@ -87,12 +100,22 @@ export class TheaterUI {
         <div class="foyer hidden" id="foyer"></div>
         <div class="join-flow hidden" id="join-flow"></div>
         <div class="intro hidden" id="intro"></div>
+        <div class="main-menu hidden" id="main-menu"></div>
         <div class="toasts" id="toasts"></div>
+        <div class="float-layer" id="float-layer"></div>
       </div>
     `;
 
     this.videoEl = this.root.querySelector('#theater-video');
     this.root.querySelector('#btn-lobby').onclick = () => this.toggleLobby();
+    this.root.querySelector('#btn-menu').onclick = () => this.emit('open-menu');
+    this.root.querySelector('#btn-fullscreen').onclick = () => this.toggleFullscreen();
+    this.root.querySelectorAll('.ghost-react').forEach((b) => {
+      b.onclick = () => {
+        this.emit('react', { kind: b.dataset.react });
+        this.floatReact(b.dataset.react);
+      };
+    });
     this.renderSeats();
     this.renderSocial();
     this.renderControls();
@@ -204,6 +227,8 @@ export class TheaterUI {
       <span class="ctl-sep"></span>
       ${mk('lock', '🔒', 'id="ctl-lock"')}
       ${mk('end', '⏹ End', 'id="ctl-end"')}
+      <button class="btn ctl" id="ctl-snack">🍿 Snack break</button>
+      <button class="btn ctl" id="ctl-door">🔒 Code lock</button>
       <button class="btn ctl ghost hidden" id="ctl-host">👑 Become host</button>
     `;
     el.querySelectorAll('[data-action]').forEach((b) => {
@@ -220,6 +245,14 @@ export class TheaterUI {
       };
     });
     el.querySelector('#ctl-host').onclick = () => this.emit('claim-host');
+    this.root.querySelector('#ctl-snack').onclick = () => {
+      const on = !this.state?.snackBreak;
+      this.emit('control', { action: 'snack', value: on });
+    };
+    this.root.querySelector('#ctl-door').onclick = () => {
+      const on = !this.state?.codeLocked;
+      this.emit('control', { action: 'codeLock', value: on });
+    };
   }
 
   // ---- State application ---------------------------------------------------
@@ -230,6 +263,22 @@ export class TheaterUI {
 
     const watching = (snap.participants || []).filter((p) => p.inside).length;
     this.root.querySelector('#watch-count').textContent = String(watching || snap.participants?.length || 0);
+
+    // Party code badge
+    const codeEl = this.root.querySelector('#room-code');
+    if (codeEl) {
+      if (snap.roomCode && snap.mode === 'clan') {
+        codeEl.textContent = `🔤 ${snap.roomCode}${snap.codeLocked ? ' 🔒' : ''}`;
+        codeEl.classList.remove('hidden');
+      } else {
+        codeEl.classList.add('hidden');
+      }
+    }
+
+    // Snack break overlay
+    const snack = this.root.querySelector('#snack-overlay');
+    if (snack) snack.classList.toggle('hidden', !(inside && snap.snackBreak));
+
     this.updateSeats();
 
     const p = snap.playback || {};
@@ -253,7 +302,10 @@ export class TheaterUI {
     // Temp-session upload feed notice (only for the shared clan movie).
     const note = this.root.querySelector('#feed-note');
     if (note) {
-      if (inside && this.mode !== 'private' && p.feedStatus === 'disconnected') {
+      if (inside && this.mode !== 'private' && p.converting) {
+        note.textContent = '⚙️ Converting to Discord-safe H.264… this can take a few minutes on large files.';
+        note.classList.remove('hidden');
+      } else if (inside && this.mode !== 'private' && p.feedStatus === 'disconnected') {
         note.textContent = '⚠️ Host connection lost — waiting for the host…';
         note.classList.remove('hidden');
       } else if (inside && this.mode !== 'private' && p.feedStatus === 'stalled') {
@@ -280,7 +332,7 @@ export class TheaterUI {
     const lock = this.root.querySelector('#ctl-lock');
     if (lock) lock.textContent = p.locked ? '🔒' : '🔓';
     this.root.querySelectorAll('#controls .ctl').forEach((b) => {
-      const hostOnly = b.id === 'ctl-lock' || b.id === 'ctl-end';
+      const hostOnly = b.id === 'ctl-lock' || b.id === 'ctl-end' || b.id === 'ctl-snack' || b.id === 'ctl-door';
       b.disabled = hostOnly ? !isHost : !canControl;
     });
     const hostBtn = this.root.querySelector('#ctl-host');
@@ -340,6 +392,23 @@ export class TheaterUI {
     // Prefer preferred seat from /join if the server already assigned one.
     const meP = (snap.participants || []).find((x) => x.id === this.me?.id);
     if (meP?.seat != null && this._joinPicks.seat == null) this._joinPicks.seat = meP.seat;
+
+    if (snap.codeLocked && meP && !meP.codeOk && snap.hostId !== this.me?.id) {
+      foyer.innerHTML = `
+        <div class="foyer-sky"></div>
+        <div class="foyer-marquee">
+          <div class="foyer-title">DARKNIGHT CINEMA</div>
+          <div class="foyer-now">DOOR LOCKED</div>
+          <div class="foyer-movie">${escapeHtml(p.videoName || 'A movie')}</div>
+          <div class="foyer-meta">Code <b>${escapeHtml(snap.roomCode || '????')}</b> required · ask the host</div>
+        </div>
+        <p class="foyer-copy">Hit 🏠 and use <b>Enter Room Code</b> with the host’s 4-letter code.</p>
+        <button class="btn foyer-enter" id="foyer-menu">🏠 Open Menu</button>
+      `;
+      foyer.classList.remove('hidden');
+      foyer.querySelector('#foyer-menu').onclick = () => this.emit('open-menu');
+      return;
+    }
 
     foyer.innerHTML = `
       <div class="foyer-sky"></div>
@@ -648,10 +717,20 @@ export class TheaterUI {
 
   showTapToPlay(onTap) {
     const el = this.root.querySelector('#tap-to-play');
+    el.textContent = '▶ Tap to start';
     el.classList.remove('hidden');
-    el.onclick = () => {
-      el.classList.add('hidden');
-      onTap();
+    el.onclick = async () => {
+      // Keep the overlay until play() actually succeeds — otherwise users
+      // get a black screen with no way to retry.
+      el.textContent = '⏳ Starting…';
+      let ok = false;
+      try {
+        ok = await onTap();
+      } catch {
+        ok = false;
+      }
+      if (ok) el.classList.add('hidden');
+      el.textContent = '▶ Tap to start';
     };
   }
 
@@ -688,6 +767,52 @@ export class TheaterUI {
         'Black screen: Discord can’t decode this file. Use MP4 H.264 + AAC (even size like 1920×1080). HandBrake “Fast 1080p30”.'
     );
   }
+
+  // ---- Main menu / cinema chrome ------------------------------------------
+  showMainMenu(handlers) {
+    const { renderMainMenu } = handlers;
+    const el = this.root.querySelector('#main-menu');
+    if (!el || !renderMainMenu) return;
+    renderMainMenu(el, {
+      snap: this.state,
+      me: this.me,
+      onJoinParty: () => handlers.onJoinParty?.(),
+      onHost: () => handlers.onHost?.(),
+      onEnterCode: (code) => handlers.onEnterCode?.(code),
+      onExit: () => handlers.onExit?.(),
+    });
+  }
+
+  hideMainMenu() {
+    const el = this.root.querySelector('#main-menu');
+    if (!el) return;
+    el.classList.add('hidden');
+    el.innerHTML = '';
+  }
+
+  toggleFullscreen() {
+    const frame = this.root.querySelector('.screen') || this.root.querySelector('#theater-video')?.parentElement;
+    if (!frame) return;
+    if (!document.fullscreenElement) {
+      frame.requestFullscreen?.().catch(() => this.toast('Fullscreen not available in this Discord client'));
+    } else {
+      document.exitFullscreen?.();
+    }
+  }
+
+  floatReact(kind) {
+    const map = { popcorn: '🍿', cheer: '👏', boo: '👻' };
+    const emoji = map[kind] || '✨';
+    const layer = this.root.querySelector('#float-layer') || this.root.querySelector('.stage');
+    const e = document.createElement('div');
+    e.className = 'float-react';
+    e.textContent = emoji;
+    e.style.left = 15 + Math.random() * 70 + '%';
+    e.style.bottom = '12%';
+    layer.appendChild(e);
+    setTimeout(() => e.remove(), 1800);
+  }
+
 }
 
 function itemEmoji(key) {

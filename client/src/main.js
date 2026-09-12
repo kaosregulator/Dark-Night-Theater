@@ -3,8 +3,10 @@ import { SyncClient } from './sync.js';
 import { TheaterPlayer } from './player.js';
 import { api } from './api.js';
 import { TheaterUI } from './theater.js';
+import { renderMainMenu } from './menu.js';
 
 // Orchestrates the Activity: Discord handshake -> sync -> player -> theater UI.
+// First surface is always the main menu (join / host / enter code).
 
 const bootStatus = (t) => {
   const el = document.getElementById('boot-status');
@@ -15,14 +17,67 @@ let mode = 'clan'; // 'clan' | 'private'
 let me = null;
 let library = [];
 let saveTimer = null;
+let menuOpen = true;
 
 function amInside(snap) {
   if (!snap || !me) return false;
-  // Nothing playing → no foyer gate.
   if (snap.mode !== 'clan' || !snap.playback?.videoUid) return true;
   if (snap.hostId && snap.hostId === me.id) return true;
   const p = (snap.participants || []).find((x) => x.id === me.id);
   return Boolean(p?.inside);
+}
+
+function enterWatching(ui, player, sync) {
+  menuOpen = false;
+  ui.hideMainMenu();
+  ui.hideFoyer();
+  ui.setMode('clan');
+  const snap = sync.snapshot;
+  if (snap?.playback) player.applyState(snap.playback);
+}
+
+function openMenu(ui, sync, player) {
+  menuOpen = true;
+  ui.showMainMenu({
+    renderMainMenu,
+    onJoinParty: () => {
+      const snap = sync.snapshot;
+      if (!snap) return;
+      if (snap.codeLocked) {
+        ui.toast('🔒 This party needs the 4-letter code — use Enter Room Code.');
+        return;
+      }
+      menuOpen = false;
+      ui.hideMainMenu();
+      if (!amInside(snap)) ui.showFoyer(snap);
+      else enterWatching(ui, player, sync);
+    },
+    onHost: async () => {
+      try {
+        const { url } = await api.hostLink(dc.channelId, dc.guildId, null);
+        ui.toast('📤 Opening host upload… keep Discord open, then come back.');
+        window.open(url, '_blank', 'noopener');
+      } catch (e) {
+        ui.toast('⚠️ Could not open host page: ' + e.message);
+      }
+    },
+    onEnterCode: (code) => {
+      const cleaned = String(code || '')
+        .trim()
+        .toUpperCase();
+      if (cleaned.length !== 4) {
+        ui.toast('Enter a 4-letter party code.');
+        return;
+      }
+      sync.unlockCode(cleaned);
+      ui.toast('🔑 Checking code…');
+    },
+    onExit: () => {
+      ui.toast('🛋️ Lobby chill mode. Hit 🏠 anytime to come back.');
+      menuOpen = false;
+      ui.hideMainMenu();
+    },
+  });
 }
 
 async function boot() {
@@ -38,12 +93,10 @@ async function boot() {
   ui.mount();
   const player = new TheaterPlayer(ui.videoEl);
   const sync = new SyncClient();
+  const menu = () => openMenu(ui, sync, player);
 
-  // ---- Wire UI callbacks ----------------------------------------------------
   ui.on('control', ({ action, value }) => {
     if (mode === 'clan') {
-      // Preserve the click gesture for autoplay: start/pause locally ASAP when
-      // the host (or unlocked room) presses ▶, then let the server confirm.
       if (action === 'toggle' || action === 'play') {
         const snap = sync.snapshot;
         const isHost = snap?.hostId === me?.id;
@@ -63,16 +116,22 @@ async function boot() {
   ui.on('seat', ({ seat }) => sync.takeSeat(seat));
   ui.on('item', ({ item }) => sync.giveItem(item));
   ui.on('claim-host', () => sync.claimHost());
+  ui.on('react', ({ kind }) => sync.react(kind));
+  ui.on('open-menu', () => menu());
   ui.on('enter-theater', ({ seat, items }) => {
-    // Gesture from Enter/Watch Movie — try play once the server marks us inside.
     sync.enter({ seat, items });
+    enterWatching(ui, player, sync);
   });
   ui.on('pick-clan', async ({ uid }) => {
     mode = 'clan';
+    menuOpen = false;
+    ui.hideMainMenu();
     await api.startMovie(dc.channelId, uid, dc.guildId).catch((e) => ui.toast('⚠️ ' + e.message));
   });
   ui.on('pick-private', async ({ uid }) => {
     mode = 'private';
+    menuOpen = false;
+    ui.hideMainMenu();
     const [pb, prog] = await Promise.all([api.playback(uid), api.progress(uid).catch(() => ({}))]);
     const video = library.find((v) => v.uid === uid);
     ui.setMode('private', video);
@@ -84,60 +143,93 @@ async function boot() {
   ui.on('leave-private', async () => {
     mode = 'clan';
     ui.setMode('clan');
-    // Re-apply the shared state when returning to the clan room (if inside).
     if (sync.snapshot && amInside(sync.snapshot)) player.applyState(sync.snapshot.playback);
+    menu();
   });
 
   player.onLocalControl = (e) => {
     if (e.type === 'needs-gesture') {
-      ui.showTapToPlay(() => {
-        player.video.muted = false;
-        player.video.play().catch(() => {});
-      });
+      ui.showTapToPlay(() => player.unlockAndPlay({ unmute: true }));
     } else if (e.type === 'needs-unmute') {
       ui.showTapToUnmute(() => {
         player.video.muted = false;
       });
     } else if (e.type === 'decode-fail') {
       ui.showDecodeFail(e.detail);
+      ui.showTapToPlay(() => player.unlockAndPlay({ unmute: true }));
+    } else if (e.type === 'converting') {
+      ui.showCodecBanner(e.detail);
     } else if (e.type === 'decode-ok') {
-      // Keep server codecTip if present; clear only local black-screen guess.
-      if (!sync.snapshot?.playback?.codecTip) ui.hideCodecBanner();
+      if (!sync.snapshot?.playback?.codecTip && !sync.snapshot?.playback?.converting) {
+        ui.hideCodecBanner();
+      }
     }
   };
 
-  // ---- Sync -> player + UI --------------------------------------------------
   sync.addEventListener('state', (e) => {
     const snap = e.detail;
     const inside = amInside(snap);
     ui.setState(snap, { me, inside });
 
-    if (mode !== 'clan') return;
-
-    if (snap.mode === 'idle' || !snap.playback?.videoUid) {
+    if (mode === 'clan' && (snap.mode === 'idle' || !snap.playback?.videoUid)) {
       player.clear();
       ui.setMode('lobby');
       ui.hideFoyer();
+      menu();
       return;
     }
 
+    if (menuOpen && mode === 'clan') {
+      menu();
+      return;
+    }
+
+    if (mode !== 'clan') return;
+
     if (!inside) {
-      // True idle screen for late joiners: foyer only — never load the movie.
       player.clear();
       ui.showFoyer(snap);
       return;
     }
 
+    ui.hideMainMenu();
     ui.hideFoyer();
     ui.setMode('clan');
     player.applyState(snap.playback);
   });
-  sync.addEventListener('room-event', (e) => ui.handleRoomEvent(e.detail));
+
+  sync.addEventListener('room-event', (e) => {
+    const ev = e.detail;
+    ui.handleRoomEvent(ev);
+    if (ev?.type === 'react') ui.floatReact(ev.kind);
+    if (ev?.type === 'snack-break') ui.toast('🍿 Snack break! Go grab something.');
+    if (ev?.type === 'snack-done') ui.toast('🎬 Snack break over — lights down.');
+    if (ev?.type === 'code-ok') {
+      ui.toast(`🔑 Code accepted · ${ev.roomCode || ''}`);
+      const snap = sync.snapshot;
+      menuOpen = false;
+      ui.hideMainMenu();
+      if (snap?.playback?.videoUid && !amInside(snap)) ui.showFoyer(snap);
+      else if (amInside(snap)) enterWatching(ui, player, sync);
+    }
+    if (ev?.type === 'enter') {
+      menuOpen = false;
+      ui.hideMainMenu();
+    }
+    if (ev?.type === 'movie') {
+      ui.toast(`🎬 Now playing · code ${ev.roomCode || sync.snapshot?.roomCode || '????'}`);
+      if (amInside(sync.snapshot)) enterWatching(ui, player, sync);
+    }
+    if (ev?.type === 'media-ready') {
+      ui.toast('✅ Discord-safe stream ready');
+      if (!menuOpen && amInside(sync.snapshot)) player.applyState(sync.snapshot.playback);
+    }
+  });
   sync.addEventListener('sync-error', (e) => ui.toast('⚠️ ' + e.detail));
 
   sync.connect();
+  menu();
 
-  // ---- Load library for the lobby ------------------------------------------
   try {
     const data = await api.library();
     library = data.videos;
@@ -146,11 +238,8 @@ async function boot() {
     ui.toast('Could not load the library yet.');
   }
 
-  // Keep clan playback anchored even without new server messages (re-nudge).
-  // Use the snapshot as-is — do NOT rewrite serverTime (that caused a hard
-  // seek backward every 4s and made ▶ look like it "never played").
   setInterval(() => {
-    if (mode !== 'clan') return;
+    if (mode !== 'clan' || menuOpen) return;
     const snap = sync.snapshot;
     if (!snap?.playback?.videoUid || !amInside(snap)) return;
     if (!snap.playback.playing) return;
@@ -161,7 +250,6 @@ async function boot() {
 }
 
 function applyPrivateControl(action, value) {
-  // Private mode drives the local <video> directly.
   const v = document.querySelector('#theater-video');
   if (!v) return;
   switch (action) {

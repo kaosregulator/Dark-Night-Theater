@@ -20,6 +20,18 @@ export const bus = new EventEmitter();
 bus.setMaxListeners(0);
 
 const rooms = new Map(); // channelId -> room
+const codesToChannel = new Map(); // 4-letter code -> channelId
+
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // no I/O (easy to misread)
+
+function mintRoomCode() {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    let code = '';
+    for (let i = 0; i < 4; i++) code += CODE_ALPHABET[(Math.random() * CODE_ALPHABET.length) | 0];
+    if (!codesToChannel.has(code)) return code;
+  }
+  return `Z${Date.now().toString(36).slice(-3).toUpperCase()}`;
+}
 
 function emptyPlayback() {
   return {
@@ -39,6 +51,7 @@ function emptyPlayback() {
     codecTip: null,
     videoCodec: null,
     audioCodec: null,
+    converting: false, // server is re-encoding to H.264 for Discord
     // Bumped after temp-file remux/probe so Activity players reload the stream.
     mediaRevision: 0,
   };
@@ -50,8 +63,11 @@ function createRoom(channelId) {
     guildId: null,
     hostId: null,
     mode: 'idle', // 'idle' | 'clan'
+    roomCode: null, // 4-letter party code (set when a movie starts)
+    codeLocked: false, // if true, joiners must enter the code before the foyer ritual
+    snackBreak: false, // funny intermission overlay while the movie stays paused
     playback: emptyPlayback(),
-    participants: new Map(), // userId -> { id, name, avatar, seat, items[], inside }
+    participants: new Map(), // userId -> { id, name, avatar, seat, items[], inside, codeOk }
     controlMessage: null, // { channelId, messageId } of the text-channel control embed
   };
   rooms.set(channelId, room);
@@ -76,6 +92,9 @@ export function snapshot(room) {
     guildId: room.guildId,
     hostId: room.hostId,
     mode: room.mode,
+    roomCode: room.roomCode,
+    codeLocked: Boolean(room.codeLocked),
+    snackBreak: Boolean(room.snackBreak),
     playback: {
       ...room.playback,
       // include a computed live position so late joiners seek correctly
@@ -122,9 +141,56 @@ export function join(channelId, user) {
     seat,
     items: existing?.items ?? [],
     inside,
+    codeOk: existing?.codeOk === true || isHost || !room.codeLocked,
   });
   broadcast(room, { event: { type: 'join', user: { id: user.id, name: user.name, inside } } });
   return room;
+}
+
+export function findChannelByCode(code) {
+  const c = String(code || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z]/g, '')
+    .slice(0, 4);
+  if (c.length !== 4) return null;
+  return codesToChannel.get(c) || null;
+}
+
+export function unlockWithCode(channelId, userId, code) {
+  const room = rooms.get(channelId);
+  if (!room) return { ok: false, reason: 'No theater here.' };
+  if (!room.roomCode) return { ok: false, reason: 'No party code yet — wait for a host to start a movie.' };
+  if (String(code || '').trim().toUpperCase() !== room.roomCode) {
+    return { ok: false, reason: 'Wrong code — ask the host for the 4-letter room code.' };
+  }
+  const p = room.participants.get(userId);
+  if (p) p.codeOk = true;
+  broadcast(room);
+  return { ok: true, roomCode: room.roomCode };
+}
+
+export function setCodeLocked(channelId, by, locked) {
+  const room = getRoom(channelId);
+  if (room.hostId && room.hostId !== by) return { ok: false, reason: 'Only the host can lock the door.' };
+  room.codeLocked = Boolean(locked);
+  broadcast(room);
+  return { ok: true };
+}
+
+export function setSnackBreak(channelId, by, on) {
+  const room = getRoom(channelId);
+  if (room.hostId && room.hostId !== by) return { ok: false, reason: 'Only the host can call snack break.' };
+  room.snackBreak = Boolean(on);
+  if (on && room.playback.playing) {
+    // Pause on snack break so nobody misses a scene.
+    const now = Date.now();
+    room.playback.positionAtUpdate = livePosition(room, now);
+    room.playback.playing = false;
+    room.playback.updatedAt = now;
+  }
+  broadcast(room, { event: { type: on ? 'snack-break' : 'snack-done' } });
+  return { ok: true };
 }
 
 // Audience finished the foyer / join ritual — seat them and let the movie through.
@@ -134,6 +200,9 @@ export function enterTheater(channelId, userId, { seat, items } = {}) {
   if (!p) return { ok: false, reason: 'Not in this theater yet.' };
   if (room.mode !== 'clan' || !room.playback.videoUid) {
     return { ok: false, reason: 'No movie is playing right now.' };
+  }
+  if (room.codeLocked && !p.codeOk && room.hostId !== userId) {
+    return { ok: false, reason: 'This party is code-locked. Enter the 4-letter room code first.' };
   }
   p.inside = true;
   if (Array.isArray(items) && items.length) {
@@ -159,6 +228,8 @@ export function listActiveRooms(guildId) {
       channelId: room.channelId,
       guildId: room.guildId,
       hostId: room.hostId,
+      roomCode: room.roomCode,
+      codeLocked: Boolean(room.codeLocked),
       videoUid: room.playback.videoUid,
       videoName: room.playback.videoName,
       viewers: inside || room.participants.size,
@@ -234,6 +305,7 @@ export function setPlaybackMeta(channelId, meta = {}) {
   if ('codecTip' in meta) room.playback.codecTip = meta.codecTip || null;
   if ('videoCodec' in meta) room.playback.videoCodec = meta.videoCodec || null;
   if ('audioCodec' in meta) room.playback.audioCodec = meta.audioCodec || null;
+  if (meta.converting != null) room.playback.converting = Boolean(meta.converting);
   if (meta.bumpRevision || meta.mediaRevision != null) {
     room.playback.mediaRevision =
       meta.mediaRevision != null
@@ -243,12 +315,33 @@ export function setPlaybackMeta(channelId, meta = {}) {
   broadcast(room);
 }
 
+// Swap the live stream URL (e.g. after server-side H.264 / HLS convert finishes).
+export function setPlaybackSource(channelId, playback = {}) {
+  const room = rooms.get(channelId);
+  if (!room) return;
+  if (playback.src != null) room.playback.src = playback.src;
+  if (playback.kind != null) room.playback.kind = playback.kind;
+  if ('hls' in playback) room.playback.hls = playback.hls;
+  if ('dash' in playback) room.playback.dash = playback.dash;
+  if (playback.webPlayable != null) room.playback.webPlayable = Boolean(playback.webPlayable);
+  if ('codecTip' in playback) room.playback.codecTip = playback.codecTip || null;
+  room.playback.converting = false;
+  room.playback.mediaRevision = (room.playback.mediaRevision || 0) + 1;
+  broadcast(room, { event: { type: 'media-ready' } });
+}
+
 // Load a movie into the clan session and start it.
 export function startClanMovie(channelId, { hostId, guildId, video, playback }) {
   const room = getRoom(channelId);
+  // Retire previous code mapping if any.
+  if (room.roomCode) codesToChannel.delete(room.roomCode);
   room.mode = 'clan';
   room.hostId = hostId;
   if (guildId) room.guildId = guildId;
+  room.roomCode = mintRoomCode();
+  codesToChannel.set(room.roomCode, channelId);
+  room.codeLocked = false;
+  room.snackBreak = false;
   room.playback = {
     ...emptyPlayback(),
     videoUid: video.uid,
@@ -265,8 +358,11 @@ export function startClanMovie(channelId, { hostId, guildId, video, playback }) 
   // Host is already "in the theater"; everyone else stays in the foyer until Enter.
   for (const p of room.participants.values()) {
     p.inside = p.id === hostId;
+    p.codeOk = p.id === hostId || !room.codeLocked;
   }
-  broadcast(room, { event: { type: 'movie', video: { uid: video.uid, name: video.name } } });
+  broadcast(room, {
+    event: { type: 'movie', video: { uid: video.uid, name: video.name }, roomCode: room.roomCode },
+  });
   return room;
 }
 
@@ -311,11 +407,28 @@ export function control(channelId, by, action, value) {
       p.locked = false;
       break;
     case 'end':
+      if (room.roomCode) codesToChannel.delete(room.roomCode);
+      room.roomCode = null;
+      room.codeLocked = false;
+      room.snackBreak = false;
       room.mode = 'idle';
       room.playback = emptyPlayback();
-      for (const p of room.participants.values()) p.inside = false;
+      for (const part of room.participants.values()) {
+        part.inside = false;
+        part.codeOk = false;
+      }
       broadcast(room, { event: { type: 'ended' } });
       return { ok: true };
+    case 'snack':
+      room.snackBreak = Boolean(value);
+      if (room.snackBreak && p.playing) {
+        p.positionAtUpdate = cur;
+        p.playing = false;
+      }
+      break;
+    case 'codeLock':
+      room.codeLocked = Boolean(value);
+      break;
     default:
       return { ok: false, reason: `Unknown action: ${action}` };
   }

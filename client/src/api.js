@@ -27,4 +27,9 @@ export const api = {
   history: () => req('/private/history'),
   progress: (uid) => req(`/private/progress/${uid}`),
   settings: (guildId) => req(`/guild/${guildId}/settings`),
+  hostLink: (channelId, guildId, textChannelId) =>
+    req('/host-link', {
+      method: 'POST',
+      body: JSON.stringify({ channelId, guildId, textChannelId }),
+    }),
 };

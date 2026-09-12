@@ -22,7 +22,7 @@ export async function startBot() {
 
   client.once(Events.ClientReady, (c) => {
     log.info(`Bot online as ${c.user.tag}`);
-    c.user.setActivity('🎬 /watch', { type: ActivityType.Watching });
+    c.user.setActivity('🎬 /host · Activity menu', { type: ActivityType.Watching });
     wireControlPanelRefresh();
   });
 

@@ -36,6 +36,8 @@ export class SyncClient extends EventTarget {
         if (msg.snapshot) this.snapshot = msg.snapshot;
         this.dispatchEvent(new CustomEvent('state', { detail: this.snapshot }));
         if (msg.event) this.dispatchEvent(new CustomEvent('room-event', { detail: msg.event }));
+      } else if (msg.type === 'code-ok') {
+        this.dispatchEvent(new CustomEvent('room-event', { detail: { type: 'code-ok', roomCode: msg.roomCode } }));
       } else if (msg.type === 'error') {
         this.dispatchEvent(new CustomEvent('sync-error', { detail: msg.error }));
       }
@@ -53,7 +55,6 @@ export class SyncClient extends EventTarget {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(obj));
   }
 
-  // Host controls.
   control(action, value) {
     this.send({ type: 'control', action, value });
   }
@@ -68,6 +69,12 @@ export class SyncClient extends EventTarget {
   }
   enter(opts = {}) {
     this.send({ type: 'enter', seat: opts.seat, items: opts.items || [] });
+  }
+  unlockCode(code) {
+    this.send({ type: 'unlock-code', code });
+  }
+  react(kind) {
+    this.send({ type: 'react', kind });
   }
 
   close() {

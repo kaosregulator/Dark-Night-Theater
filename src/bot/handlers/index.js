@@ -1,5 +1,6 @@
 import { log } from '../../logger.js';
 import { handleWatchCommand, handleWatchPick, handleWatchParty, handleWatchPrivate, handleWatchBack } from './watch.js';
+import { handleHostCommand } from './host.js';
 import { handleTheaterCommand, handleControlButton } from './theater.js';
 import { handlePreshow } from './preshow.js';
 import { handleJoinCommand, handleJoin } from './join.js';
@@ -12,6 +13,8 @@ export async function routeInteraction(interaction) {
     // ---- Slash commands ----
     if (interaction.isChatInputCommand()) {
       switch (interaction.commandName) {
+        case 'host':
+          return await handleHostCommand(interaction);
         case 'watch':
           return await handleWatchCommand(interaction);
         case 'join':

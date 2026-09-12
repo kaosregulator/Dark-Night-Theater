@@ -86,6 +86,28 @@ export function attachWebSocket(server) {
           break;
         }
 
+        case 'unlock-code': {
+          const result = sessions.unlockWithCode(ws.channelId, uid, msg.code);
+          if (!result.ok) send({ type: 'error', error: result.reason || 'Bad code' });
+          else send({ type: 'code-ok', roomCode: result.roomCode });
+          break;
+        }
+
+        case 'react': {
+          // Lightweight emotes (popcorn throw / cheer) — broadcast to everyone.
+          const kind = String(msg.kind || 'cheer').slice(0, 20);
+          sessions.bus.emit('update', {
+            channelId: ws.channelId,
+            snapshot: sessions.snapshot(sessions.getRoom(ws.channelId)),
+            event: {
+              type: 'react',
+              kind,
+              user: { id: uid, name: ws.user.name || ws.user.username || 'Someone' },
+            },
+          });
+          break;
+        }
+
         case 'claim-host':
           // First person / owner grabbing host when none set.
           if (!sessions.isHost(ws.channelId, uid) && !sessions.getRoom(ws.channelId).hostId) {

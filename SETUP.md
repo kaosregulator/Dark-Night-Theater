@@ -32,7 +32,9 @@ files** — there's no cloud service to configure.
 ## 2. Enable the Activity
 
 1. In your app → **Activities → Settings** → turn **Enable Activities** on.
-2. You'll set the URL mapping in [step 5](#5-url-mapping) once you have a public URL.
+2. Under **Supported Platforms**, check **Web**, **iOS**, and **Android**.
+   - If iOS/Android are unchecked, phones show: **“This Activity is not currently available on this OS”** — that message comes from Discord, not this app.
+3. You'll set the URL mapping in [step 5](#5-url-mapping) once you have a public URL.
 
 ---
 
@@ -155,7 +157,9 @@ The laptop must stay awake/online for the whole movie.
 | Slash commands don't appear | `npm run register`; set `DISCORD_DEV_GUILD_ID` for instant dev registration. |
 | "Start Watch Party" can't launch | Give the bot **Create Instant Invite** permission in that channel. |
 | Library empty | Upload at `/host` or drop files in `media/`, then `/library sync`. |
-| Video is black / won't play | It's probably MKV/AVI or an unsupported codec — remux to MP4 (H.264/AAC). |
+| Video is black / won't play | Discord only paints **H.264 + AAC**. MovieBox/HEVC files auto-convert after upload (wait for “Converting…” to finish), or re-encode with HandBrake **Fast 1080p30**. |
+| “▶ Tap to start” does nothing | Tap again after convert finishes; keep the host upload tab open. |
+| “not currently available on this OS” | Developer Portal → Activities → Settings → enable **iOS** and **Android**. |
 | `/host` says "Bad admin key" | Use `HOST_ADMIN_KEY` (or `SESSION_SECRET` if you left it blank). |
 | Buffering with several viewers | You're limited by the host's upload bandwidth — fewer viewers or a bigger pipe. |
 | Autoplay blocked on mobile | The Theater shows **▶ Tap to start** — that first tap satisfies the browser. |
