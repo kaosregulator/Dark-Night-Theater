@@ -177,7 +177,9 @@ host.get('/api/host/session/:id/probe', (req, res) => {
     exists: true,
     complete: session.complete,
     webPlayable: session.webPlayable !== false,
+    converting: Boolean(session.converting) || Boolean(session.webFile === undefined && session.probe && !session.probe.webPlayable),
     codecTip: session.codecTip || null,
+    webReady: Boolean(session.webFile),
     probe: session.probe
       ? {
           videoCodec: session.probe.videoCodec,
@@ -362,12 +364,17 @@ function streamFrom(offset){
   xhr.send(FILE.slice(offset));
 }
 async function pollProbe(n){
-  if(n>40){ setStatus(hostMsg+'<br><small>✅ Uploaded. Open the Theater and press ▶. If the screen is black, re-encode to H.264+AAC.</small>'); return; }
+  if(n>120){ setStatus(hostMsg+'<br><small>✅ Uploaded. Open the Theater and press ▶. If still black, re-encode to H.264+AAC.</small>'); return; }
   try{
     const r=await fetch('/api/host/session/'+SID+'/probe?s='+encodeURIComponent(S)).then(x=>x.json());
     if(!r.exists){ setStatus('The party has ended.'); return; }
-    if(r.probe){
-      let msg=hostMsg+'<br><small>✅ Ready · '+esc(r.probe.videoCodec||'?')+' / '+esc(r.probe.audioCodec||'?')+' · '+(r.probe.width||'?')+'×'+(r.probe.height||'?')+'</small>';
+    if(r.converting && !r.webReady){
+      setStatus(hostMsg+'<br><small>⚙️ Converting to Discord-safe H.264 + AAC… large files can take several minutes. Keep this tab open.</small>');
+      setTimeout(()=>pollProbe(n+1),2500);
+      return;
+    }
+    if(r.webReady || r.probe){
+      let msg=hostMsg+'<br><small>✅ Ready'+(r.probe?(' · '+esc(r.probe.videoCodec||'?')+' / '+esc(r.probe.audioCodec||'?')+' · '+(r.probe.width||'?')+'×'+(r.probe.height||'?')):'')+'</small>';
       if(r.codecTip) msg+='<br><small style="color:#ffb0b0">⚠️ '+esc(r.codecTip)+'</small>';
       else if(r.webPlayable===false) msg+='<br><small style="color:#ffb0b0">⚠️ This file likely won’t paint in Discord — re-encode to H.264 + AAC.</small>';
       else msg+='<br><small>Open the Theater and press ▶ if it isn’t already playing.</small>';

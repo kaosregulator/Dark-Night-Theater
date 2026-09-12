@@ -253,7 +253,10 @@ export class TheaterUI {
     // Temp-session upload feed notice (only for the shared clan movie).
     const note = this.root.querySelector('#feed-note');
     if (note) {
-      if (inside && this.mode !== 'private' && p.feedStatus === 'disconnected') {
+      if (inside && this.mode !== 'private' && p.converting) {
+        note.textContent = '⚙️ Converting to Discord-safe H.264… this can take a few minutes on large files.';
+        note.classList.remove('hidden');
+      } else if (inside && this.mode !== 'private' && p.feedStatus === 'disconnected') {
         note.textContent = '⚠️ Host connection lost — waiting for the host…';
         note.classList.remove('hidden');
       } else if (inside && this.mode !== 'private' && p.feedStatus === 'stalled') {
@@ -648,10 +651,20 @@ export class TheaterUI {
 
   showTapToPlay(onTap) {
     const el = this.root.querySelector('#tap-to-play');
+    el.textContent = '▶ Tap to start';
     el.classList.remove('hidden');
-    el.onclick = () => {
-      el.classList.add('hidden');
-      onTap();
+    el.onclick = async () => {
+      // Keep the overlay until play() actually succeeds — otherwise users
+      // get a black screen with no way to retry.
+      el.textContent = '⏳ Starting…';
+      let ok = false;
+      try {
+        ok = await onTap();
+      } catch {
+        ok = false;
+      }
+      if (ok) el.classList.add('hidden');
+      el.textContent = '▶ Tap to start';
     };
   }
 

@@ -39,6 +39,7 @@ function emptyPlayback() {
     codecTip: null,
     videoCodec: null,
     audioCodec: null,
+    converting: false, // server is re-encoding to H.264 for Discord
     // Bumped after temp-file remux/probe so Activity players reload the stream.
     mediaRevision: 0,
   };
@@ -234,6 +235,7 @@ export function setPlaybackMeta(channelId, meta = {}) {
   if ('codecTip' in meta) room.playback.codecTip = meta.codecTip || null;
   if ('videoCodec' in meta) room.playback.videoCodec = meta.videoCodec || null;
   if ('audioCodec' in meta) room.playback.audioCodec = meta.audioCodec || null;
+  if (meta.converting != null) room.playback.converting = Boolean(meta.converting);
   if (meta.bumpRevision || meta.mediaRevision != null) {
     room.playback.mediaRevision =
       meta.mediaRevision != null
@@ -241,6 +243,21 @@ export function setPlaybackMeta(channelId, meta = {}) {
         : (room.playback.mediaRevision || 0) + 1;
   }
   broadcast(room);
+}
+
+// Swap the live stream URL (e.g. after server-side H.264 / HLS convert finishes).
+export function setPlaybackSource(channelId, playback = {}) {
+  const room = rooms.get(channelId);
+  if (!room) return;
+  if (playback.src != null) room.playback.src = playback.src;
+  if (playback.kind != null) room.playback.kind = playback.kind;
+  if ('hls' in playback) room.playback.hls = playback.hls;
+  if ('dash' in playback) room.playback.dash = playback.dash;
+  if (playback.webPlayable != null) room.playback.webPlayable = Boolean(playback.webPlayable);
+  if ('codecTip' in playback) room.playback.codecTip = playback.codecTip || null;
+  room.playback.converting = false;
+  room.playback.mediaRevision = (room.playback.mediaRevision || 0) + 1;
+  broadcast(room, { event: { type: 'media-ready' } });
 }
 
 // Load a movie into the clan session and start it.

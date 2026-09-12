@@ -79,7 +79,9 @@ function panelEmbed(channelId) {
       { name: 'Watching', value: String(room.participants.size), inline: true },
       { name: 'Controls', value: p.locked ? '🔒 Host only' : '🔓 Everyone', inline: true }
     )
-    .setFooter({ text: 'Open the Theater in your voice channel to watch • one host drives playback' });
+    .setFooter({
+      text: 'Open Theater in voice · Mobile: enable iOS+Android under Developer Portal → Activities → Settings → Supported Platforms',
+    });
   return embed;
 }
 

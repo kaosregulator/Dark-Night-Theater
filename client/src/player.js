@@ -2,17 +2,30 @@ import Hls from 'hls.js';
 
 // Video player wrapper. Plays local MP4/WebM (served with range support) and
 // optionally HLS via hls.js, and keeps the local <video> aligned with the
-// shared playback anchor coming from the sync server. Drift beyond a threshold
-// triggers a seek; small drift is corrected with playbackRate nudging.
+// shared playback anchor coming from the sync server.
+//
+// Discord Activities run inside a sandboxed Chromium with a strict autoplay
+// policy and a flaky media proxy — so we always start muted, never seek past
+// what's buffered, and surface decode failures instead of a silent black screen.
 
 const DRIFT_HARD = 2.0; // seconds -> hard seek
 const DRIFT_SOFT = 0.4; // seconds -> speed nudge
-const PAINT_WAIT_MS = 2800;
+const PAINT_WAIT_MS = 3200;
 
 function withRevision(url, revision) {
   if (!url || revision == null) return url;
   const join = url.includes('?') ? '&' : '?';
   return `${url}${join}r=${encodeURIComponent(String(revision))}`;
+}
+
+function bufferedEnd(video) {
+  try {
+    const b = video.buffered;
+    if (!b || b.length === 0) return 0;
+    return b.end(b.length - 1);
+  } catch {
+    return 0;
+  }
 }
 
 export class TheaterPlayer {
@@ -25,10 +38,25 @@ export class TheaterPlayer {
     this.onLocalControl = () => {};
     this._paintTimer = null;
     this._wantUnmute = false;
+    this._pendingSeek = null;
+    this._started = false;
+
+    // Critical for Discord iframe / mobile WebViews.
+    this.video.playsInline = true;
+    this.video.setAttribute('playsinline', '');
+    this.video.setAttribute('webkit-playsinline', '');
+    this.video.preload = 'auto';
+    this.video.controls = false;
+    this.video.disableRemotePlayback = true;
 
     this.video.addEventListener('error', () => this._onMediaError());
     this.video.addEventListener('playing', () => this._armPaintWatch());
-    this.video.addEventListener('loadeddata', () => this._armPaintWatch());
+    this.video.addEventListener('loadeddata', () => {
+      this._armPaintWatch();
+      this._flushPendingSeek();
+    });
+    this.video.addEventListener('canplay', () => this._flushPendingSeek());
+    this.video.addEventListener('progress', () => this._flushPendingSeek());
     this.video.addEventListener('emptied', () => this._clearPaintWatch());
   }
 
@@ -40,6 +68,8 @@ export class TheaterPlayer {
     if (same) return;
     this.currentUid = uid;
     this.mediaRevision = revision ?? null;
+    this._started = false;
+    this._pendingSeek = null;
     this._destroyHls();
     this._clearPaintWatch();
 
@@ -52,9 +82,25 @@ export class TheaterPlayer {
     // HLS (either a local .m3u8 or a remote manifest).
     const manifest = kind === 'hls' ? src : hls;
     if (Hls.isSupported() && manifest) {
-      const h = new Hls({ maxBufferLength: 30, maxMaxBufferLength: 120, enableWorker: true });
+      const h = new Hls({
+        maxBufferLength: 30,
+        maxMaxBufferLength: 120,
+        enableWorker: true,
+        startLevel: -1,
+        // Discord's Activity proxy can stall on large segment bursts.
+        fragLoadingTimeOut: 20000,
+        manifestLoadingTimeOut: 20000,
+      });
       h.loadSource(withRevision(manifest, this.mediaRevision));
       h.attachMedia(this.video);
+      h.on(Hls.Events.ERROR, (_e, data) => {
+        if (data?.fatal) {
+          this.onLocalControl({
+            type: 'decode-fail',
+            detail: 'Stream error — wait for the host convert to finish, or re-host as H.264 + AAC.',
+          });
+        }
+      });
       this.hls = h;
     } else if (this.video.canPlayType('application/vnd.apple.mpegurl') && manifest) {
       this.video.src = withRevision(manifest, this.mediaRevision); // Safari / iOS native HLS
@@ -83,7 +129,7 @@ export class TheaterPlayer {
     this._paintTimer = setTimeout(() => this._checkPaint(), PAINT_WAIT_MS);
   }
 
-  // Discord Chromium often "plays" HEVC / broken MP4s with audio clock advancing
+  // Discord Chromium often "plays" HEVC / broken MP4s with the clock advancing
   // but videoWidth stays 0 → solid black screen. Surface that clearly.
   _checkPaint() {
     this._paintTimer = null;
@@ -93,7 +139,7 @@ export class TheaterPlayer {
       this.onLocalControl({
         type: 'decode-fail',
         detail:
-          'Video is not painting frames. Discord Activities need MP4 H.264 + AAC (even resolution like 1920×1080). MovieBox / rip files are often H.265.',
+          'Video is not painting frames. Discord Activities need MP4 H.264 + AAC (even resolution like 1920×1080). MovieBox / rip files are often H.265 — wait for server convert, or re-export.',
       });
     } else {
       this.onLocalControl({ type: 'decode-ok' });
@@ -106,33 +152,132 @@ export class TheaterPlayer {
     let detail = 'Could not decode this movie in Discord’s browser.';
     if (code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED || code === 4) {
       detail =
-        'This file’s codecs aren’t supported here. Re-export as MP4 H.264 video + AAC audio (HandBrake “Fast 1080p30”).';
+        'This file’s codecs aren’t supported here. Re-export as MP4 H.264 video + AAC audio (HandBrake “Fast 1080p30”), or wait for the server convert to finish.';
     } else if (code === MediaError.MEDIA_ERR_NETWORK || code === 2) {
-      detail = 'Network error loading the stream — keep the host tab open and try Play again.';
+      detail = 'Network error loading the stream — keep the host tab open and tap Play again.';
     } else if (code === MediaError.MEDIA_ERR_DECODE || code === 3) {
       detail =
-        'Decode failed (often H.265/HEVC or AC-3 in an .mp4 wrapper). Re-encode to H.264 + AAC.';
+        'Decode failed (often H.265/HEVC or AC-3 in an .mp4 wrapper). Re-encode to H.264 + AAC, or wait for auto-convert.';
     }
     this.onLocalControl({ type: 'decode-fail', detail });
   }
 
+  // Safe seek: never jump past buffered media (progressive uploads / proxy).
+  _safeSeek(target) {
+    const t = Math.max(0, Number(target) || 0);
+    const end = bufferedEnd(this.video);
+    const ready = this.video.readyState >= 1;
+    if (!ready || (end > 0 && t > end + 0.5)) {
+      this._pendingSeek = t;
+      // Seek to the furthest safe point so playback can start.
+      if (end > 1) {
+        try {
+          this.video.currentTime = Math.max(0, end - 0.5);
+        } catch {
+          /* ignore */
+        }
+      }
+      return false;
+    }
+    try {
+      this.video.currentTime = t;
+      this._pendingSeek = null;
+      return true;
+    } catch {
+      this._pendingSeek = t;
+      return false;
+    }
+  }
+
+  _flushPendingSeek() {
+    if (this._pendingSeek == null) return;
+    const t = this._pendingSeek;
+    const end = bufferedEnd(this.video);
+    if (this.video.readyState < 1) return;
+    if (end > 0 && t > end + 1) {
+      // Still not buffered that far — nudge forward as data arrives.
+      try {
+        this.video.currentTime = Math.max(0, end - 0.25);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    this._safeSeek(t);
+  }
+
   _tryPlay() {
     const v = this.video;
-    const play = v.play();
-    if (!play || typeof play.then !== 'function') return;
-    play.catch(() => {
-      // Autoplay policies: try muted, then ask for a tap.
+    // Always attempt muted first inside Discord — unmuted autoplay is blocked.
+    if (!this._started) {
       v.muted = true;
       this._wantUnmute = true;
-      v.play()
-        .then(() => this.onLocalControl({ type: 'needs-unmute' }))
-        .catch(() => this.onLocalControl({ type: 'needs-gesture' }));
-    });
+    }
+    const play = v.play();
+    if (!play || typeof play.then !== 'function') return;
+    play
+      .then(() => {
+        this._started = true;
+        if (this._wantUnmute) this.onLocalControl({ type: 'needs-unmute' });
+      })
+      .catch(() => {
+        v.muted = true;
+        this._wantUnmute = true;
+        v.play()
+          .then(() => {
+            this._started = true;
+            this.onLocalControl({ type: 'needs-unmute' });
+          })
+          .catch(() => this.onLocalControl({ type: 'needs-gesture' }));
+      });
+  }
+
+  // User tapped ▶ — must be called from a click handler.
+  async unlockAndPlay({ unmute = true } = {}) {
+    const v = this.video;
+    if (unmute) {
+      v.muted = false;
+      this._wantUnmute = false;
+    } else {
+      v.muted = true;
+    }
+    try {
+      await v.play();
+      this._started = true;
+      this._armPaintWatch();
+      return true;
+    } catch {
+      // Fall back to muted play so something paints, then ask for sound.
+      try {
+        v.muted = true;
+        this._wantUnmute = true;
+        await v.play();
+        this._started = true;
+        this._armPaintWatch();
+        this.onLocalControl({ type: 'needs-unmute' });
+        return true;
+      } catch (err) {
+        this.onLocalControl({
+          type: 'decode-fail',
+          detail: 'Could not start playback. If the file is still converting, wait a bit and tap again.',
+        });
+        return false;
+      }
+    }
   }
 
   // Apply the authoritative shared state to this player.
   applyState(playback) {
     if (!playback?.videoUid) return;
+
+    // Show converting tip early (before media is ready).
+    if (playback.converting) {
+      this.onLocalControl({
+        type: 'converting',
+        detail: playback.codecTip || 'Converting to Discord-safe H.264…',
+      });
+    }
+
     if (playback.src || playback.hls || playback.dash) {
       this.load({
         uid: playback.videoUid,
@@ -160,14 +305,9 @@ export class TheaterPlayer {
 
     this.suppressEvents = true;
     if (Math.abs(drift) > DRIFT_HARD || Number.isNaN(this.video.currentTime)) {
-      try {
-        this.video.currentTime = Math.max(0, target);
-      } catch {
-        /* not seekable yet */
-      }
+      this._safeSeek(target);
       this.video.playbackRate = playback.rate || 1;
     } else if (playback.playing && Math.abs(drift) > DRIFT_SOFT) {
-      // Nudge speed slightly to converge without a visible jump.
       this.video.playbackRate = (playback.rate || 1) * (drift > 0 ? 0.96 : 1.04);
     } else {
       this.video.playbackRate = playback.rate || 1;
@@ -187,6 +327,8 @@ export class TheaterPlayer {
     this._clearPaintWatch();
     this.currentUid = null;
     this.mediaRevision = null;
+    this._pendingSeek = null;
+    this._started = false;
     try {
       this.video.pause();
     } catch {
@@ -200,13 +342,7 @@ export class TheaterPlayer {
   playPrivate({ uid, hls, dash, src, kind }, resumeAt = 0) {
     this.load({ uid, hls, dash, src, kind, revision: 0 });
     const seek = () => {
-      if (resumeAt > 0) {
-        try {
-          this.video.currentTime = resumeAt;
-        } catch {
-          /* ignore */
-        }
-      }
+      if (resumeAt > 0) this._safeSeek(resumeAt);
       this._tryPlay();
       this.video.removeEventListener('loadedmetadata', seek);
     };

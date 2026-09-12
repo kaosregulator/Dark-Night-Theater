@@ -90,19 +90,22 @@ async function boot() {
 
   player.onLocalControl = (e) => {
     if (e.type === 'needs-gesture') {
-      ui.showTapToPlay(() => {
-        player.video.muted = false;
-        player.video.play().catch(() => {});
-      });
+      ui.showTapToPlay(() => player.unlockAndPlay({ unmute: true }));
     } else if (e.type === 'needs-unmute') {
       ui.showTapToUnmute(() => {
         player.video.muted = false;
       });
     } else if (e.type === 'decode-fail') {
       ui.showDecodeFail(e.detail);
+      // Offer another tap so the user isn't stuck on a dead black screen.
+      ui.showTapToPlay(() => player.unlockAndPlay({ unmute: true }));
+    } else if (e.type === 'converting') {
+      ui.showCodecBanner(e.detail);
     } else if (e.type === 'decode-ok') {
       // Keep server codecTip if present; clear only local black-screen guess.
-      if (!sync.snapshot?.playback?.codecTip) ui.hideCodecBanner();
+      if (!sync.snapshot?.playback?.codecTip && !sync.snapshot?.playback?.converting) {
+        ui.hideCodecBanner();
+      }
     }
   };
 

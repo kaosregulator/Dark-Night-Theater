@@ -60,9 +60,12 @@ body {
 }
 .screen-empty .pop { font-size: 2.4rem; }
 .tap {
-  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  background: rgba(0,0,0,.55); font-size: 1.3rem; font-weight: 700; cursor: pointer; color: var(--gold-2);
+  position: absolute; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,.6); font-size: 1.35rem; font-weight: 800; cursor: pointer; color: var(--gold-2);
+  letter-spacing: .02em; text-shadow: 0 2px 12px rgba(0,0,0,.8);
+  -webkit-tap-highlight-color: transparent; user-select: none;
 }
+.tap:active { transform: scale(0.98); }
 .curtain {
   position: absolute; top: 0; bottom: 0; width: 6%; z-index: 2; pointer-events: none;
   background: linear-gradient(90deg, #5a0f16, #7a1620 40%, #3c0a10);
