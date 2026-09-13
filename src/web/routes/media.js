@@ -4,54 +4,10 @@ import express from 'express';
 import * as store from '../../media/store.js';
 import { MIME } from '../../media/store.js';
 import { verifyMediaToken } from '../../media/token.js';
-import { libraryHlsDir } from '../../media/party-convert.js';
 
 const MIME_TYPE = (ext) => MIME[String(ext).toLowerCase()] || 'application/octet-stream';
 
 export const media = express.Router();
-
-function rewritePlaylist(raw, token) {
-  return String(raw)
-    .split('\n')
-    .map((line) => {
-      const t = line.trim();
-      if (!t || t.startsWith('#')) return line;
-      if (/\.ts($|\?)/i.test(t) || t.endsWith('.m4s')) {
-        const base = t.split('?')[0];
-        return `${base}?t=${encodeURIComponent(token)}`;
-      }
-      return line;
-    })
-    .join('\n');
-}
-
-// Library live-HLS playlist (conversion-first watch-party / background convert).
-media.get('/:id/index.m3u8', (req, res) => {
-  const { id } = req.params;
-  if (!verifyMediaToken(id, req.query.t)) return res.status(403).end('Forbidden');
-  const playlist = path.join(libraryHlsDir(id), 'index.m3u8');
-  if (!fs.existsSync(playlist)) return res.status(404).end('Not ready');
-  const body = rewritePlaylist(fs.readFileSync(playlist, 'utf8'), req.query.t);
-  res.status(200);
-  res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-  res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.send(body);
-});
-
-media.get('/:id/:seg', (req, res, next) => {
-  const { id, seg } = req.params;
-  // Only HLS segments — fall through to progressive /:id for anything else.
-  if (!/^seg\d+\.ts$/i.test(seg) && !/\.ts$/i.test(seg)) return next('route');
-  if (!verifyMediaToken(id, req.query.t)) return res.status(403).end('Forbidden');
-  const file = path.join(libraryHlsDir(id), path.basename(seg));
-  if (!fs.existsSync(file)) return res.status(404).end('Not found');
-  res.status(200);
-  res.setHeader('Content-Type', 'video/mp2t');
-  res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  fs.createReadStream(file).pipe(res);
-});
 
 // Stream a local video with HTTP range support. This is what makes seeking,
 // late joiners, and 1hr+ playback work: the browser's <video> element requests

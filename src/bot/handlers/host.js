@@ -74,7 +74,7 @@ export async function handleHostCommand(interaction) {
         '4. Friends hit **Join** (or enter the code if you lock the door) → concessions → seat → movie.',
       ].join('\n')
     )
-    .setFooter({ text: 'Any movie works — we auto-convert to a Discord-safe stream' });
+    .setFooter({ text: 'Prefer H.264 + AAC MP4 (HandBrake Fast 1080p30) for instant Discord playback' });
 
   const rows = [
     new ActionRowBuilder().addComponents(

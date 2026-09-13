@@ -151,7 +151,7 @@ async function boot() {
     const pb = sync.snapshot?.playback;
     if (pb?.converting) {
       ui.hideTapToPlay();
-      ui.showCodecBanner(pb.codecTip || 'Preparing a Discord-safe stream…');
+      ui.showCodecBanner(pb.codecTip || 'Converting video for Discord…');
       return false;
     }
     if (pb) player.applyState(pb);
@@ -170,7 +170,7 @@ async function boot() {
       if (sync.snapshot?.playback?.converting) {
         ui.hideTapToPlay();
         ui.showCodecBanner(
-          sync.snapshot.playback.codecTip || 'Preparing a Discord-safe stream…'
+          sync.snapshot.playback.codecTip || 'Converting video for Discord…'
         );
         return;
       }
@@ -178,7 +178,7 @@ async function boot() {
       ui.showTapToPlay(() => tryStartPlayback());
     } else if (e.type === 'converting') {
       ui.hideTapToPlay();
-      ui.showCodecBanner(e.detail || 'Preparing a Discord-safe stream…');
+      ui.showCodecBanner(e.detail || 'Converting video for Discord…');
     } else if (e.type === 'decode-ok') {
       ui.hideTapToPlay();
       if (!sync.snapshot?.playback?.codecTip && !sync.snapshot?.playback?.converting) {
