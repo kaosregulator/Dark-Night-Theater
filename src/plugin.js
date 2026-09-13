@@ -7,6 +7,7 @@ import { setDiscordClient } from './bot/clientRef.js';
 import { mountTheater } from './web/server.js';
 import { attachWebSocket } from './web/ws.js';
 import { GatewayIntentBits } from 'discord.js';
+import { attachImageTargetWatcher } from './bot/image-target/index.js';
 
 // ============================================================================
 //  ADD-ON / PLUGIN API
@@ -40,11 +41,21 @@ import { GatewayIntentBits } from 'discord.js';
 export const theaterCommands = commands;
 
 // Intents this feature needs — union these into your Client's intents.
-export const THEATER_INTENTS = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates];
+// GuildMessages + MessageContent are required for the image-target watcher
+// (MessageContent is privileged — enable it in the Discord Developer Portal).
+export const THEATER_INTENTS = [
+  GatewayIntentBits.Guilds,
+  GatewayIntentBits.GuildVoiceStates,
+  GatewayIntentBits.GuildMessages,
+  GatewayIntentBits.MessageContent,
+];
 
 // Command names / custom-id prefixes this feature owns (so you can check for
 // collisions with your existing bot).
-export const THEATER_COMMAND_NAMES = ['watch', 'join', 'theater', 'library', 'theater-settings'];
+export const THEATER_COMMAND_NAMES = [
+  'watch', 'join', 'theater', 'library', 'theater-settings',
+  'image-target', 'imagetrack',
+];
 export const THEATER_CUSTOMID_PREFIXES = ['w:', 'ps:', 't:ctl:', 'set:', 'join:'];
 
 // Attach the Theater's interaction handling to YOUR existing client. Adds an
@@ -53,6 +64,7 @@ export const THEATER_CUSTOMID_PREFIXES = ['w:', 'ps:', 't:ctl:', 'set:', 'join:'
 export function attachTheater(client) {
   setDiscordClient(client);
   client.on(Events.InteractionCreate, routeInteraction);
+  attachImageTargetWatcher(client);
   if (client.isReady?.()) wireControlPanelRefresh();
   else client.once(Events.ClientReady, () => wireControlPanelRefresh());
   return client;

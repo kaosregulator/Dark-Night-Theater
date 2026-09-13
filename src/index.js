@@ -3,6 +3,8 @@ import { log } from './logger.js';
 import { startWebServer } from './web/server.js';
 import { startBot } from './bot/client.js';
 import { syncLibrary } from './services/library-store.js';
+import { hasDatabaseUrl, pingDatabase } from './db/postgres.js';
+import { migrateImageTargetSchema } from './bot/image-target/migrate.js';
 
 // ============================================================================
 //  DarkNight Home Theater — single-process entrypoint.
@@ -18,9 +20,27 @@ function banner() {
   log.info(`Bot ready:        ${readiness.bot ? '✅' : '❌'}`);
   log.info(`Activity OAuth:   ${readiness.activity ? '✅' : '❌'}`);
   log.info(`Movie host:       ✅ local files (${config.media.dir})`);
+  log.info(`Postgres:         ${hasDatabaseUrl() ? '✅ DATABASE_URL set' : '❌ DATABASE_URL missing'}`);
   if (config.app.baseUrl) log.info(`Add movies at:    ${config.app.baseUrl}/host`);
   if (miss.length) log.warn(`Missing secrets:  ${miss.join(', ')}`);
   if (!config.app.baseUrl) log.warn('PUBLIC_BASE_URL not set — Activity URL mapping needs it.');
+}
+
+async function initImageTargetDb() {
+  if (!hasDatabaseUrl()) {
+    log.warn(
+      '[image-target] DATABASE_URL not set — share Postgres.DATABASE_URL into this Railway service. Watcher will refuse writes until it is configured.',
+    );
+    return false;
+  }
+  try {
+    await pingDatabase();
+    await migrateImageTargetSchema();
+    return true;
+  } catch (err) {
+    log.error('[image-target] Postgres init failed:', err.message);
+    return false;
+  }
 }
 
 async function main() {
@@ -28,6 +48,9 @@ async function main() {
 
   // Web server always starts (even unconfigured) so hosting shows "running".
   startWebServer();
+
+  // Image-target schema (Postgres) — best-effort before the bot connects.
+  await initImageTargetDb();
 
   // Bot starts if configured.
   await startBot().catch((err) => log.error('Bot failed to start:', err.message));

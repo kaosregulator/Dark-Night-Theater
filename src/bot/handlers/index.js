@@ -10,6 +10,7 @@ import {
   handleEmojiCommand,
   handleEmojiInteraction,
 } from '../emoji/commands/emoji.js';
+import { handleImageTargetCommand } from '../image-target/index.js';
 
 // Central interaction router. Wired to the client's interactionCreate event.
 export async function routeInteraction(interaction) {
@@ -31,6 +32,9 @@ export async function routeInteraction(interaction) {
           return await handleLibraryCommand(interaction);
         case 'emoji':
           return await handleEmojiCommand(interaction);
+        case 'image-target':
+        case 'imagetrack':
+          return await handleImageTargetCommand(interaction);
         default:
           return;
       }
