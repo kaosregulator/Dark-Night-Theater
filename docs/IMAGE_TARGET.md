@@ -41,8 +41,11 @@ duplicates still match).
 
 ## Setup
 
-1. Enable **Message Content Intent** in the Discord Developer Portal
-   (Bot → Privileged Gateway Intents).
+1. **Required for image watching:** enable **Message Content Intent** in the
+   Discord Developer Portal → your app → **Bot** → **Privileged Gateway Intents**
+   → turn ON **Message Content Intent** → Save. Without this, Discord rejects
+   login with `Used disallowed intents`. The bot will fall back to theater-only
+   mode; `/image-target` watching stays off until the intent is enabled.
 2. **Postgres (required in production)** — you already have a Railway Postgres
    service. Share its URL into the bot service:
    - Railway → **Dark-Night-Theater** → **Variables** → **New Variable**
