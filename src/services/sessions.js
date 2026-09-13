@@ -354,14 +354,35 @@ export function startClanMovie(channelId, { hostId, guildId, video, playback }) 
     positionAtUpdate: 0,
     updatedAt: Date.now(),
     locked: true,
-    // Host session may already know MovieBox/large files need convert — pass
-    // through so Activities never attach HEVC progressive during upload.
+    // Conversion-first: library movies hold progressive until live HLS is playable.
+    // Temp sessions already set converting via temp.js.
     webPlayable: playback.webPlayable != null ? Boolean(playback.webPlayable) : true,
     codecTip: playback.codecTip || null,
     converting: Boolean(playback.converting),
     videoCodec: playback.videoCodec || null,
     audioCodec: playback.audioCodec || null,
   };
+
+  // Kick library conversions without blocking room start.
+  // store.filePath(uid) is null for temp /tmedia sessions (handled in temp.js).
+  queueMicrotask(() => {
+    import('../media/store.js')
+      .then(({ filePath }) => {
+        const fp = filePath?.(video.uid);
+        if (!fp || playback.kind === 'hls') return null;
+        room.playback.converting = true;
+        room.playback.webPlayable = false;
+        room.playback.codecTip =
+          room.playback.codecTip ||
+          'Preparing a Discord-safe stream… playback starts after the first segments.';
+        broadcast(room);
+        return import('../media/party-convert.js').then(({ attachLibraryPartyConversion }) =>
+          attachLibraryPartyConversion(channelId, video.uid, fp)
+        );
+      })
+      .catch(() => {});
+  });
+
   // Host is already "in the theater"; everyone else stays in the foyer until Enter.
   for (const p of room.participants.values()) {
     p.inside = p.id === hostId;
