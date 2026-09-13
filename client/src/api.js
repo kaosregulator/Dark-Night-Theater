@@ -22,6 +22,22 @@ export const api = {
   session: (channelId) => req(`/session/${channelId}`),
   startMovie: (channelId, uid, guildId) =>
     req(`/session/${channelId}/movie`, { method: 'POST', body: JSON.stringify({ uid, guildId }) }),
+  addToMarquee: (channelId, uid) =>
+    req(`/session/${channelId}/marquee`, { method: 'POST', body: JSON.stringify({ uid }) }),
+  removeFromMarquee: (channelId, uid) =>
+    req(`/session/${channelId}/marquee/${encodeURIComponent(uid)}`, { method: 'DELETE' }),
+  voteMarquee: (channelId, uid) =>
+    req(`/session/${channelId}/marquee/${encodeURIComponent(uid)}/vote`, { method: 'POST', body: '{}' }),
+  startMarquee: (channelId, uid, guildId) =>
+    req(`/session/${channelId}/marquee/${encodeURIComponent(uid)}/start`, {
+      method: 'POST',
+      body: JSON.stringify({ guildId }),
+    }),
+  openBooth: (channelId, uid, guildId, label) =>
+    req(`/session/${channelId}/booth`, {
+      method: 'POST',
+      body: JSON.stringify({ uid, guildId, label }),
+    }),
   saveProgress: (uid, position) =>
     req('/private/progress', { method: 'POST', body: JSON.stringify({ uid, position }) }),
   history: () => req('/private/history'),

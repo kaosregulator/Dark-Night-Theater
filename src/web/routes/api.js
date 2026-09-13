@@ -91,6 +91,60 @@ api.post('/session/:channelId/movie', (req, res) => {
   res.json(sessions.snapshot(sessions.getRoom(req.params.channelId)));
 });
 
+// Stage up to 3 movies on the marquee (picker / vote — not a queue).
+api.post('/session/:channelId/marquee', (req, res) => {
+  const { uid } = req.body || {};
+  const video = library.findVideo(uid);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+  const result = sessions.addToMarquee(req.params.channelId, video);
+  if (!result.ok) return res.status(400).json({ error: result.reason });
+  res.json(sessions.snapshot(sessions.getRoom(req.params.channelId)));
+});
+
+api.delete('/session/:channelId/marquee/:uid', (req, res) => {
+  const result = sessions.removeFromMarquee(req.params.channelId, req.user.id, req.params.uid);
+  if (!result.ok) return res.status(400).json({ error: result.reason });
+  res.json(sessions.snapshot(sessions.getRoom(req.params.channelId)));
+});
+
+api.post('/session/:channelId/marquee/:uid/vote', (req, res) => {
+  const result = sessions.voteMarquee(req.params.channelId, req.user.id, req.params.uid);
+  if (!result.ok) return res.status(400).json({ error: result.reason });
+  res.json(sessions.snapshot(sessions.getRoom(req.params.channelId)));
+});
+
+// Start a voted/picked marquee title in THIS theater room.
+api.post('/session/:channelId/marquee/:uid/start', (req, res) => {
+  const video = library.findVideo(req.params.uid);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+  const playback = getPlayback(video);
+  sessions.startClanMovie(req.params.channelId, {
+    hostId: req.user.id,
+    guildId: req.body?.guildId,
+    video,
+    playback,
+  });
+  res.json(sessions.snapshot(sessions.getRoom(req.params.channelId)));
+});
+
+// Open an independent booth theater for another marquee title.
+api.post('/session/:channelId/booth', (req, res) => {
+  const { uid, guildId, label } = req.body || {};
+  const video = library.findVideo(uid);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+  const playback = getPlayback(video);
+  const result = sessions.openBooth(req.params.channelId, {
+    hostId: req.user.id,
+    guildId,
+    video,
+    playback,
+    label,
+  });
+  if (!result.ok) return res.status(400).json({ error: result.reason });
+  res.json(result);
+});
+
+
 // Private viewing progress + history.
 api.post('/private/progress', (req, res) => {
   const { uid, position } = req.body || {};
