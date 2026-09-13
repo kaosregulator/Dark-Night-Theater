@@ -91,12 +91,6 @@ host.put('/api/host/upload', (req, res) => {
       size: bytes,
     });
     log.info(`Host uploaded "${video.name}" (${(bytes / 1048576).toFixed(0)} MB)`);
-    import('../../media/party-convert.js')
-      .then(({ enqueueLibraryConvert }) => {
-        const fp = store.filePath(video.uid);
-        if (fp) enqueueLibraryConvert(video.uid, fp);
-      })
-      .catch(() => {});
     res.json({ ok: true, video });
   });
   out.on('error', (err) => {
@@ -317,7 +311,7 @@ export function hostPage() {
   small{color:#9a97b5}
 </style></head><body><div class="card">
   <h1>🎬 Host a Movie</h1>
-  <p id="mode">Add a video from this device. Any common container/codec is fine — every upload is converted automatically to a Discord-safe H.264/AAC stream. Playback starts after the first segments (you do not wait for 100% conversion). Containers browsers can’t stream raw: <code>${nonWeb}</code> (those still convert).</p>
+  <p id="mode">Add a video from this device. Best format: <b>MP4 (H.264 video + AAC audio)</b> or WebM. Even resolution (e.g. 1920×1080). Won’t play in browsers: <code>${nonWeb}</code>. MovieBox / “Pro” rips are often <b>H.265</b> — those show a black screen in Discord.</p>
   <div id="keywrap"><label>Admin key</label><input type="password" id="key" placeholder="HOST_ADMIN_KEY (or SESSION_SECRET)"/></div>
   <label>Category (optional)</label>
   <input type="text" id="cat" placeholder="Library" value="Library"/>
@@ -334,7 +328,7 @@ const keyEl=$('#key');
 if(S){ // session mode: opened from /watch — no key, auto-start the party
   $('#keywrap').style.display='none';
   $('#listwrap').style.display='none';
-  $('#mode').innerHTML='Pick a movie from this device — the party <b>starts right away</b> and the file uploads in the background. Your file stays on your device; the server copy is temporary and deleted when the party ends. <b>Keep this tab open</b> while watching.<br><br><b>Conversion-first:</b> every movie automatically enters the live HLS pipeline (H.264 + AAC). Playback unlocks as soon as the first segments exist — source codec/filename/size never block the attempt.';
+  $('#mode').innerHTML='Pick a movie from this device — the party <b>starts right away</b> and it streams while it uploads. Your file stays on your device; the server copy is temporary and deleted when the party ends. <b>Keep this tab open</b> while watching.<br><br><b>Must be Discord-safe:</b> MP4 with <b>H.264 + AAC</b> (or WebM). Even width/height (1920×1080). <b>.mp4 alone is not enough</b> — MovieBox/HEVC/H.265 used to play black — the server now auto-builds a Discord HLS stream after upload so playback can start before the whole movie finishes converting. HandBrake “Fast 1080p30” is still the fastest path.';
 } else {
   keyEl.value=localStorage.getItem('dnkey')||'';
   keyEl.onchange=()=>{localStorage.setItem('dnkey',keyEl.value);refresh();};
@@ -381,11 +375,11 @@ async function hostSession(f){
   SID=meta.sessionId; FILE=f; retries=0;
   hostMsg='🎉 <b>Party started</b> — “'+meta.name+'”! Prefer launching from Discord: voice channel → <b>Activities</b> → DarkNight (same window). <b>Keep this tab open</b> while it streams.';
   if(meta.activityUrl) hostMsg+='<br><a class="open" href="'+meta.activityUrl+'" target="_blank" rel="noopener">▶ Open Theater invite</a> <small>(invite links may open another Discord window — that’s Discord, not a bug)</small>';
-  if(meta.converting){
-    hostMsg+='<br><small>⚙️ Preparing a Discord-safe stream… playback unlocks after the first segments (conversion continues in the background).</small>';
+  if(meta.converting || meta.suspectConvert){
+    hostMsg+='<br><small>🛡️ MovieBox/large file detected — Discord playback is <b>held</b> until a safe HLS stream is ready (avoids the black screen). Upload finishes first, then the first segments unlock the Theater.</small>';
     if(meta.codecTip) hostMsg+='<br><small>'+esc(meta.codecTip)+'</small>';
-  } else if(meta.webPlayable===false && meta.codecTip){
-    hostMsg+='<br><small>'+esc(meta.codecTip)+'</small>';
+  } else if(meta.webPlayable===false){
+    hostMsg+='<br><small>⚠️ This container may not play in browsers — use MP4 H.264/AAC.</small>';
   }
   setStatus(hostMsg);
   $('#barwrap').style.display='block';
@@ -421,7 +415,7 @@ function streamFrom(offset){
 }
 async function pollProbe(n){
   // Large MovieBox converts can take a while before the first HLS segments appear.
-  if(n>480){ setStatus(hostMsg+'<br><small>✅ Uploaded. Open the Theater and press ▶ — stream prepares automatically.</small>'); return; }
+  if(n>480){ setStatus(hostMsg+'<br><small>✅ Uploaded. Open the Theater and press ▶. If still black, re-encode to H.264+AAC.</small>'); return; }
   try{
     const r=await fetch('/api/host/session/'+SID+'/probe?s='+encodeURIComponent(S)).then(x=>x.json());
     if(!r.exists){ setStatus('The party has ended.'); return; }
@@ -432,7 +426,8 @@ async function pollProbe(n){
     }
     if(r.webReady || r.probe){
       let msg=hostMsg+'<br><small>✅ '+(r.streamKind==='hls'?'Discord stream ready (HLS)':'Ready')+''+(r.probe?(' · '+esc(r.probe.videoCodec||'?')+' / '+esc(r.probe.audioCodec||'?')+' · '+(r.probe.width||'?')+'×'+(r.probe.height||'?')):'')+'</small>';
-      if(r.codecTip) msg+='<br><small>'+esc(r.codecTip)+'</small>';
+      if(r.codecTip) msg+='<br><small style="color:#ffb0b0">⚠️ '+esc(r.codecTip)+'</small>';
+      else if(r.webPlayable===false) msg+='<br><small style="color:#ffb0b0">⚠️ This file likely won’t paint in Discord — re-encode to H.264 + AAC.</small>';
       else msg+='<br><small>Open the Theater and press ▶ if it isn’t already playing.</small>';
       setStatus(msg);
       return;

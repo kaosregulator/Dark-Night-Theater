@@ -5,8 +5,7 @@ import { EventEmitter } from 'node:events';
 import { config } from '../config.js';
 import { MIME, NON_WEB } from './store.js';
 import { signMediaToken } from './token.js';
-import { looksLikeNeedsConvert } from './suspect.js';
-import { enqueueLiveHls, cleanupConversion, PRIORITY } from './conversion-manager.js';
+import { looksLikeNeedsConvert, suspectReason, LARGE_HOLD_BYTES } from './suspect.js';
 import { bus as sessionBus, setFeedStatus } from '../services/sessions.js';
 import { log } from '../logger.js';
 
@@ -60,10 +59,10 @@ export function create({ channelId, name, size, addedBy }) {
   const displayName =
     (name ? path.basename(String(name), path.extname(String(name))) : 'Movie').replace(/[._]+/g, ' ').trim() ||
     'Movie';
-  // Conversion-first: every upload enters the live-HLS pipeline.
-  // Filename / size / codec never gate whether we convert.
+  // MovieBox / large rips: hold progressive playback until probe/HLS. Otherwise
+  // Discord attaches HEVC-in-MP4 immediately → permanent black "Starting…" screen.
   const suspect = looksLikeNeedsConvert(String(name || displayName), declaredSize) || NON_WEB.has(ext);
-  const tip = 'Preparing a Discord-safe stream… playback starts after the first segments.';
+  const tip = suspectReason(String(name || displayName), declaredSize);
   const session = {
     id,
     channelId: channelId || null,
@@ -76,10 +75,9 @@ export function create({ channelId, name, size, addedBy }) {
     connected: false, // is a host upload actively feeding right now?
     everConnected: false,
     feedStatus: 'streaming',
-    webPlayable: false,
-    suspectConvert: suspect, // diagnostic only — never blocks conversion
-    converting: true,
-    conversionState: 'queued',
+    webPlayable: suspect ? false : !NON_WEB.has(ext),
+    suspectConvert: suspect,
+    converting: suspect,
     codecTip: tip,
     kind: ext === '.m3u8' ? 'hls' : 'file',
     createdAt: now(),
@@ -89,9 +87,11 @@ export function create({ channelId, name, size, addedBy }) {
   session.emitter.setMaxListeners(0);
   byId.set(id, session);
   if (channelId) byChannel.set(channelId, id);
-  log.info(
-    `temp ${id}: conversion-first queue (hint=${suspect} · ${(declaredSize / 1048576).toFixed(0)} MB)`
-  );
+  if (suspect) {
+    log.info(
+      `temp ${id}: holding playback until Discord-safe stream (suspect MovieBox/large · ${(declaredSize / 1048576).toFixed(0)} MB)`
+    );
+  }
   return session;
 }
 
@@ -159,89 +159,100 @@ export function finish(session) {
 async function prepareForWeb(session) {
   if (session.prepareStarted) return;
   session.prepareStarted = true;
+  const { probeFile, faststartRemux, codecTip, logProbe } = await import('./probe.js');
 
-  // Probe is diagnostic only — it never decides whether we convert.
-  let info = null;
-  try {
-    const { probeFile, logProbe } = await import('./probe.js');
-    info = await probeFile(session.file, { failClosed: false });
-    logProbe(session.id, info);
+  // Probe FIRST. Skipping an upfront full-file faststart remux on multi‑GB
+  // MovieBox files avoids the 120s timeout + 2× disk copy before HLS can start.
+  const failClosed = Boolean(session.suspectConvert);
+  let info = await probeFile(session.file, { failClosed });
+  logProbe(session.id, info);
+  session.probe = info;
+
+  // Fail-closed: unknown/unreadable MovieBox-ish uploads must attempt HLS, not
+  // silently serve progressive HEVC (black screen forever).
+  if (!info?.ok && failClosed) {
+    info = {
+      ok: true,
+      webPlayable: false,
+      videoCodec: info?.videoCodec || null,
+      audioCodec: info?.audioCodec || null,
+      oddSize: false,
+      reason: info?.reason || 'Probe failed — converting to be safe',
+    };
     session.probe = info;
-  } catch (err) {
-    log.warn(`temp ${session.id}: probe error — ${err.message}`);
   }
 
-  session.converting = true;
-  session.conversionState = 'converting';
-  session.webPlayable = false;
-  session.codecTip = 'Preparing a Discord-safe stream… playback starts after the first segments.';
+  if (info?.ok) {
+    session.webPlayable = Boolean(info.webPlayable);
+    session.codecTip = codecTip(info);
+  }
+
+  const needsConvert = Boolean(info?.ok && (!info.webPlayable || info.oddSize));
+  session.converting = needsConvert;
+
+  if (!needsConvert) {
+    // Safe progressive MP4/WebM — optional moov reloc for faster start. Cap size
+    // so huge H.264 hosts aren't stuck remuxing for minutes on Railway disk.
+    const remux = await faststartRemux(session.file, {
+      timeoutMs: 120000,
+      maxBytes: LARGE_HOLD_BYTES,
+    });
+    if (remux.ok) log.info(`temp ${session.id}: faststart remux ok`);
+    else if (remux.reason) log.warn(`temp ${session.id}: faststart skipped — ${remux.reason}`);
+  }
 
   if (session.channelId) {
     const { setPlaybackMeta } = await import('../services/sessions.js');
     setPlaybackMeta(session.channelId, {
-      webPlayable: false,
-      codecTip: session.codecTip,
+      webPlayable: needsConvert ? false : session.webPlayable !== false,
+      codecTip: needsConvert
+        ? 'Building a Discord-safe stream… playback unlocks after the first segments (you do not wait for the whole movie to finish converting).'
+        : session.codecTip || null,
       videoCodec: info?.videoCodec || null,
       audioCodec: info?.audioCodec || null,
-      converting: true,
+      converting: needsConvert,
+      // Remux / codec decision — force Activity players to reload (or attach now).
       bumpRevision: true,
     });
   }
 
-  const FAIL_TIP = '❌ This movie could not be prepared for playback.';
-  const hlsDir = path.join(TMP_DIR, `${session.id}.hls`);
-  session.hlsDir = hlsDir;
-
-  const markFailed = (err) => {
-    log.warn(`temp ${session.id}: conversion failed — ${err?.message || err}`);
+  if (!needsConvert) {
     session.converting = false;
-    session.conversionState = 'failed';
-    session.webPlayable = false;
-    session.codecTip = FAIL_TIP;
-    if (session.channelId) {
-      import('../services/sessions.js')
-        .then(({ setPlaybackMeta }) => {
-          setPlaybackMeta(session.channelId, {
-            converting: false,
-            webPlayable: false,
-            codecTip: FAIL_TIP,
-            bumpRevision: true,
-          });
-        })
-        .catch(() => {});
-    }
-  };
+    session.webPlayable = true;
+    session.codecTip = null;
+    return;
+  }
 
+  // MovieBox / HEVC / AC-3: Discord Activities can't decode HEVC, and the
+  // Activity proxy is flaky with large progressive MP4s. Live HLS publishes
+  // playable segments ASAP so a full movie can start without waiting for the
+  // entire encode to finish.
   try {
+    const { startLiveHls } = await import('./transcode.js');
+    const hlsDir = path.join(TMP_DIR, `${session.id}.hls`);
+    session.hlsDir = hlsDir;
+
     await new Promise((resolve) => {
       let settled = false;
-      const done = () => {
+      const finish = () => {
         if (settled) return;
         settled = true;
         resolve();
       };
 
-      const job = enqueueLiveHls({
-        id: session.id,
-        filePath: session.file,
-        outDir: hlsDir,
-        priority: PRIORITY.ACTIVE_PARTY,
+      const handle = startLiveHls(session.file, hlsDir, {
         maxHeight: 720,
-        onPlayable: ({ playlist, segments }) => {
+        onReady: () => {
           if (session.hlsReady) {
-            done();
+            finish();
             return;
           }
           session.hlsReady = true;
-          session.hlsPlaylist = playlist || path.join(hlsDir, 'index.m3u8');
+          session.hlsPlaylist = path.join(hlsDir, 'index.m3u8');
           session.webPlayable = true;
           session.codecTip = null;
-          session.converting = false; // playable now; encode may still run
-          session.conversionState = 'playable';
+          session.converting = false;
           session.kind = 'hls';
-          log.info(
-            `temp ${session.id}: playable (${segments || '?'} segments) — encode continues in background`
-          );
           if (session.channelId) {
             import('../services/sessions.js')
               .then(({ setPlaybackSource }) => {
@@ -257,33 +268,39 @@ async function prepareForWeb(session) {
               })
               .catch((e) => log.warn('temp media-ready broadcast:', e.message));
           }
-          // Unlock viewers as soon as first segments exist.
-          done();
+          // Unlock viewers now — ffmpeg keeps appending segments.
+          finish();
         },
-        onComplete: () => {
+        onDone: () => {
           session.hlsComplete = true;
-          session.conversionState = 'complete';
-          done();
+          finish();
         },
-        onFailed: (err) => {
-          markFailed(err);
-          done();
+        onError: (err) => {
+          log.warn(`temp ${session.id}: live HLS failed — ${err.message}`);
+          session.converting = false;
+          session.webPlayable = false;
+          if (session.channelId) {
+            import('../services/sessions.js')
+              .then(({ setPlaybackMeta }) => {
+                setPlaybackMeta(session.channelId, {
+                  converting: false,
+                  webPlayable: false,
+                  codecTip:
+                    session.codecTip ||
+                    'Could not auto-convert this MovieBox/HEVC file. Re-export as MP4 H.264 + AAC (HandBrake Fast 1080p30) and host again.',
+                  bumpRevision: true,
+                });
+              })
+              .catch(() => {});
+          }
+          finish();
         },
       });
-
-      // Wire stop handle so scrub can cancel the worker/ffmpeg.
-      session.hlsStop = () => cleanupConversion(session.id);
-      const pollChild = setInterval(() => {
-        if (job.child) {
-          session.hlsChild = job.child;
-          clearInterval(pollChild);
-        }
-        if (['complete', 'failed', 'cancelled'].includes(job.state)) clearInterval(pollChild);
-      }, 250);
-      if (pollChild.unref) pollChild.unref();
+      session.hlsStop = handle.stop;
+      session.hlsChild = handle.child;
     });
   } catch (err) {
-    markFailed(err);
+    log.warn(`temp ${session.id}: transcode error — ${err.message}`);
   }
 }
 
@@ -332,11 +349,6 @@ export function scrub(id) {
   if (!session) return false;
   try {
     session.hlsStop?.();
-  } catch {
-    /* ignore */
-  }
-  try {
-    cleanupConversion(session.id);
   } catch {
     /* ignore */
   }

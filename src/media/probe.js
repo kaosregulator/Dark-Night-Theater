@@ -145,11 +145,20 @@ export async function faststartRemux(filePath, { timeoutMs = 120000, maxBytes = 
 
 // Soft tip shown in the Activity / host page when a file won't decode.
 export function codecTip(info) {
-  // Conversion-first: never tell the user to manually re-encode.
-  // Probe stays available for diagnostics / ffmpeg parameter choice only.
   if (!info) return null;
   if (info.webPlayable && !info.oddSize) return null;
-  return 'Preparing a Discord-safe stream… playback starts after the first segments.';
+  const bits = [];
+  if (info.videoCodec && !WEB_VIDEO.has(info.videoCodec)) {
+    bits.push(`This file’s video is ${info.videoCodec.toUpperCase()}, which Discord’s Activity browser can’t paint (black screen).`);
+  }
+  if (info.audioCodec && !WEB_AUDIO.has(info.audioCodec)) {
+    bits.push(`Audio is ${info.audioCodec.toUpperCase()} — re-encode to AAC.`);
+  }
+  if (info.oddSize) {
+    bits.push(`Resolution ${info.width}×${info.height} isn’t even — some devices show a black frame.`);
+  }
+  bits.push('Re-export as MP4 H.264 + AAC (even resolution, e.g. 1920×1080). HandBrake “Fast 1080p30” works well.');
+  return bits.join(' ');
 }
 
 export function logProbe(label, info) {

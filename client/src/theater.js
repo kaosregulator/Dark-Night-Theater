@@ -336,14 +336,15 @@ export class TheaterUI {
     const note = this.root.querySelector('#feed-note');
     if (note) {
       if (inside && this.mode !== 'private' && p.converting && (p.feedStatus === 'streaming' || p.feedStatus === 'stalled')) {
-        // Upload still running while conversion pipeline prepares Discord HLS.
+        // MovieBox/large files: hold the black progressive URL while the host
+        // finishes uploading, then build Discord HLS.
         note.textContent =
           p.feedStatus === 'stalled'
-            ? '⏳ Upload stalled — waiting for the host…'
-            : '📡 Uploading… Discord-safe stream builds after upload finishes.';
+            ? '⏳ Large/MovieBox upload stalled — waiting for the host… Discord stream builds after upload finishes.'
+            : '📡 Uploading MovieBox/large file… Discord playback is held until a safe HLS stream is ready (avoids the black screen).';
         note.classList.remove('hidden');
       } else if (inside && this.mode !== 'private' && p.converting) {
-        note.textContent = '⚙️ Preparing Discord-safe stream… first segments unlock playback soon.';
+        note.textContent = '⚙️ Building Discord-safe HLS… first segments unlock playback soon on large files.';
         note.classList.remove('hidden');
       } else if (inside && this.mode !== 'private' && p.feedStatus === 'disconnected') {
         note.textContent = '⚠️ Host connection lost — waiting for the host…';
@@ -359,15 +360,15 @@ export class TheaterUI {
       }
     }
 
-    // Conversion / stream-prep guidance from server.
+    // Codec / black-screen guidance from server probe (MovieBox HEVC, AC-3, etc.).
     // While converting, prefer the converting message — never leave a sticky fatal banner.
     if (inside && this.mode !== 'private' && p.converting) {
       this._localDecodeFail = false;
       this.showCodecBanner(
         p.codecTip ||
           (p.feedStatus === 'streaming' || p.feedStatus === 'stalled'
-            ? 'Uploading… Discord-safe stream builds after upload. Keep the host tab open.'
-            : 'Preparing Discord-safe stream… keep the host tab open.')
+            ? 'Uploading MovieBox/large file… Discord stream builds after upload (black screen avoided). Keep the host tab open.'
+            : 'Building Discord-safe HLS… keep the host tab open.')
       );
     } else if (inside && this.mode !== 'private' && p.codecTip) {
       this.showCodecBanner(p.codecTip);
@@ -826,7 +827,7 @@ export class TheaterUI {
     this._localDecodeFail = true;
     this.showCodecBanner(
       detail ||
-        'This movie could not be prepared for playback.'
+        'Black screen: Discord can’t decode this file. Use MP4 H.264 + AAC (even size like 1920×1080). HandBrake “Fast 1080p30”.'
     );
   }
 

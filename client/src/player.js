@@ -93,13 +93,14 @@ export class TheaterPlayer {
     this._converting = Boolean(converting);
     this._clearPaintWatch();
 
-    // While conversion runs, do not attach the original source — wait for HLS.
+    // While the server re-encodes HEVC/AC-3, do not attach the incompatible
+    // original — that causes MEDIA_ERR_SRC_NOT_SUPPORTED and a sticky fatal UI.
     if (converting && kind === 'file' && !hls && !dash) {
       this._awaitingConversion = true;
       this._hardResetMedia();
       this.onLocalControl({
         type: 'converting',
-        detail: 'Preparing stream… playback starts after the first segments',
+        detail: 'Building Discord stream… first minutes unlock shortly',
       });
       return;
     }
@@ -115,14 +116,14 @@ export class TheaterPlayer {
       this._destroyHls();
     }
 
-    // Prefer generated HLS whenever available (conversion-first pipeline).
-    const manifest = hls || (kind === 'hls' ? src : null);
-    if (kind === 'file' && src && !manifest) {
+    // Local file (MP4/WebM) served with range support — just point <video> at it.
+    if (kind === 'file' && src) {
       this.video.src = withRevision(src, this.mediaRevision);
       this.video.load?.();
       return;
     }
-    // HLS (local .m3u8 or remote manifest).
+    // HLS (either a local .m3u8 or a remote manifest).
+    const manifest = kind === 'hls' ? src : hls;
     if (Hls.isSupported() && manifest) {
       const h = new Hls({
         maxBufferLength: 30,
@@ -145,7 +146,7 @@ export class TheaterPlayer {
           this._hadMediaError = true;
           this.onLocalControl({
             type: 'decode-fail',
-            detail: 'This movie could not be prepared for playback.',
+            detail: 'Stream error — wait for the host convert to finish, or re-host as H.264 + AAC.',
           });
         }
       });
@@ -238,7 +239,7 @@ export class TheaterPlayer {
     this.onLocalControl({
       type: 'decode-fail',
       detail:
-        'This movie could not be prepared for playback.',
+        'Video is not painting frames. Discord Activities need MP4 H.264 + AAC (even resolution like 1920×1080). MovieBox / rip files are often H.265 — wait for server convert, or re-export.',
     });
   }
 
@@ -264,7 +265,7 @@ export class TheaterPlayer {
     if (this._converting || this._awaitingConversion) {
       this.onLocalControl({
         type: 'converting',
-        detail: 'Preparing stream… playback starts after the first segments',
+        detail: 'Building Discord stream… first minutes unlock shortly',
       });
       return;
     }
@@ -274,12 +275,12 @@ export class TheaterPlayer {
     // Prefer numeric codes — MediaError globals are missing in some embeds/tests.
     if (code === 4 /* MEDIA_ERR_SRC_NOT_SUPPORTED */) {
       detail =
-        'This movie could not be prepared for playback.';
+        'This file’s codecs aren’t supported here. Re-export as MP4 H.264 video + AAC audio (HandBrake “Fast 1080p30”), or wait for the server convert to finish.';
     } else if (code === 2 /* MEDIA_ERR_NETWORK */) {
       detail = 'Network error loading the stream — keep the host tab open and tap Play again.';
     } else if (code === 3 /* MEDIA_ERR_DECODE */) {
       detail =
-        'This movie could not be prepared for playback.';
+        'Decode failed (often H.265/HEVC or AC-3 in an .mp4 wrapper). Re-encode to H.264 + AAC, or wait for auto-convert.';
     }
     this.onLocalControl({ type: 'decode-fail', detail });
   }
@@ -477,7 +478,7 @@ export class TheaterPlayer {
     if (playback.converting) {
       this.onLocalControl({
         type: 'converting',
-        detail: playback.codecTip || 'Preparing a Discord-safe stream…',
+        detail: playback.codecTip || 'Converting video for Discord…',
       });
     }
 
