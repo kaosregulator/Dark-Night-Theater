@@ -178,7 +178,7 @@ The laptop must stay awake/online for the whole movie.
 | Slash commands don't appear | `npm run register`; set `DISCORD_DEV_GUILD_ID` for instant dev registration. |
 | "Start Watch Party" can't launch | Give the bot **Create Instant Invite** permission in that channel. |
 | Library empty | Upload at `/host` or drop files in `media/`, then `/library sync`. |
-| Video is black / won't play | Discord only paints **H.264 + AAC**. MovieBox/HEVC files auto-convert after upload (wait for “Converting…” to finish), or re-encode with HandBrake **Fast 1080p30**. |
+| Video is black / won't play | Every upload auto-converts to Discord-safe H.264/AAC HLS. Playback unlocks after the first segments — you do not wait for 100% conversion. If it still fails, ffmpeg could not decode the source. |
 | “▶ Tap to start” does nothing | Tap again after convert finishes; keep the host upload tab open. |
 | “not currently available on this OS” | Developer Portal → Activities → Settings → enable **iOS** and **Android**. |
 | `/host` says "Bad admin key" | Use `HOST_ADMIN_KEY` (or `SESSION_SECRET` if you left it blank). |
