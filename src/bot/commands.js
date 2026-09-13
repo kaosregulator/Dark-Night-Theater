@@ -52,7 +52,7 @@ export const commands = [
     .setDMPermission(false),
 
   // Image-target watcher (pHash + optional Jina CLIP). Builders already have
-  // ManageGuild permission + subcommands.
+  // ManageGuild permission — opens the Image Target Hub (optional attachment).
   imageTargetCommand,
   imageTrackCommand,
 ].map((c) => (typeof c.toJSON === 'function' ? c.toJSON() : c));

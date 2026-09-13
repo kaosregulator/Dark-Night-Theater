@@ -10,7 +10,10 @@ import {
   handleEmojiCommand,
   handleEmojiInteraction,
 } from '../emoji/commands/emoji.js';
-import { handleImageTargetCommand } from '../image-target/index.js';
+import {
+  handleImageTargetCommand,
+  handleImageTargetHub,
+} from '../image-target/index.js';
 
 // Central interaction router. Wired to the client's interactionCreate event.
 export async function routeInteraction(interaction) {
@@ -47,6 +50,15 @@ export async function routeInteraction(interaction) {
       interaction.customId.startsWith('emoji:')
     ) {
       return await handleEmojiInteraction(interaction);
+    }
+
+    // ---- /image-target hub (buttons, selects, file-upload modals) ----
+    if (
+      (interaction.isMessageComponent() || interaction.isModalSubmit()) &&
+      typeof interaction.customId === 'string' &&
+      interaction.customId.startsWith('it:')
+    ) {
+      return await handleImageTargetHub(interaction);
     }
 
     // ---- Select menus ----

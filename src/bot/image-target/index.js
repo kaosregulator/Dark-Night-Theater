@@ -11,6 +11,13 @@ export {
   handleImageTargetCommand,
 } from './commands.js';
 
+export {
+  handleImageTargetHub,
+  buildHubPayload,
+  parseHubId,
+  HUB_PREFIX,
+} from './hub.js';
+
 export { attachImageTargetWatcher, handleImageTargetMessage } from './watcher.js';
 
 export {

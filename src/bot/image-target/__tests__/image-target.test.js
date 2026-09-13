@@ -212,3 +212,46 @@ describe('cosine similarity provider contract', async () => {
     assert.equal(p.available, false);
   });
 });
+
+describe('hub defaults and customIds', async () => {
+  const { DEFAULT_ACTION } = await import('../constants.js');
+  const { parseHubId, HUB_PREFIX } = await import('../hub.js');
+  const store = await import('../store.js');
+
+  afterEach(() => {
+    store.__resetMemoryStore();
+  });
+
+  it('defaults to delete_warn so matches are visible', () => {
+    assert.equal(DEFAULT_ACTION, 'delete_warn');
+  });
+
+  it('parses it: customIds', () => {
+    assert.equal(HUB_PREFIX, 'it:');
+    assert.deepEqual(parseHubId('it:watch'), { action: 'watch', parts: [] });
+    assert.deepEqual(parseHubId('it:toggle:abc'), { action: 'toggle', parts: ['abc'] });
+    assert.equal(parseHubId('emoji:x'), null);
+  });
+
+  it('stores previewJpeg on targets for the hub gallery', async () => {
+    const preview = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+    const t = await store.addTarget('guild-hub', {
+      name: 'Preview me',
+      perceptualHash: 'aaaaaaaaaaaaaaaa',
+      blockHash: 'b'.repeat(64),
+      createdBy: 'u1',
+      previewJpeg: preview,
+      sourceUrl: 'https://cdn.example/x.png',
+    });
+    assert.ok(Buffer.isBuffer(t.previewJpeg));
+    assert.equal(t.previewJpeg.equals(preview), true);
+    assert.equal(t.sourceUrl, 'https://cdn.example/x.png');
+    const listed = await store.listTargets('guild-hub', { includeDisabled: true });
+    assert.equal(listed[0].previewJpeg.equals(preview), true);
+  });
+
+  it('new guild config uses delete_warn', async () => {
+    const cfg = await store.getGuildConfig('guild-fresh');
+    assert.equal(cfg.action, 'delete_warn');
+  });
+});
