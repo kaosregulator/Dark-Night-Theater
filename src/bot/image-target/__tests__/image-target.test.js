@@ -1,50 +1,22 @@
 /**
  * Unit tests for the image-target watcher (no Discord, no network).
- * Run: node --test src/bot/image-target/__tests__/image-target.test.js
+ * Uses the in-memory store backend (IMAGE_TARGET_MEMORY=1).
+ * Run: npm run test:image-target
  */
-import { describe, it, before, after } from 'node:test';
+process.env.IMAGE_TARGET_MEMORY = '1';
+process.env.NODE_ENV = 'test';
+
+import { describe, it, before, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
-import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.resolve(__dirname, '../../../../data');
-const STORE_FILE = path.join(DATA_DIR, 'image-targets.json');
-
-// Isolate store file for this test run.
-const backupPath = STORE_FILE + '.bak-test';
-let hadStore = false;
-
-before(() => {
-  mkdirSync(DATA_DIR, { recursive: true });
-  if (existsSync(STORE_FILE)) {
-    hadStore = true;
-    writeFileSync(backupPath, readFileSync(STORE_FILE));
-  }
-  writeFileSync(STORE_FILE, JSON.stringify({ guilds: {} }, null, 2));
-});
-
-after(() => {
-  if (hadStore && existsSync(backupPath)) {
-    writeFileSync(STORE_FILE, readFileSync(backupPath));
-    rmSync(backupPath, { force: true });
-  } else if (existsSync(STORE_FILE)) {
-    // leave empty guilds
-    writeFileSync(STORE_FILE, JSON.stringify({ guilds: {} }, null, 2));
-  }
-});
 
 async function makePatternPng({ seed = 1, size = 128, format = 'png' } = {}) {
-  // Deterministic noisy pattern so pHash isn't all-zeros (solid colors collapse).
   const buf = Buffer.alloc(size * size * 3);
   let s = seed >>> 0;
   for (let i = 0; i < buf.length; i++) {
     s = (s * 1664525 + 1013904223) >>> 0;
     buf[i] = (s >>> 16) & 0xff;
   }
-  // Draw a unique colored rectangle based on seed.
   const img = sharp(buf, { raw: { width: size, height: size, channels: 3 } });
   if (format === 'jpeg' || format === 'jpg') {
     return img.jpeg({ quality: 85 }).toBuffer();
@@ -88,9 +60,6 @@ describe('phash', async () => {
 
   it('gives low Hamming distance for same image, different format', async () => {
     const png = await makePatternPng({ seed: 7, format: 'png' });
-    const jpg = await makePatternPng({ seed: 7, format: 'jpeg' });
-    // Same seed raw → encode differently; still visually identical pattern.
-    // Re-encode png→jpeg for a fairer test:
     const jpgFromPng = await sharp(png).jpeg({ quality: 80 }).toBuffer();
     const a = await fingerprintImage(png);
     const b = await fingerprintImage(jpgFromPng);
@@ -116,26 +85,32 @@ describe('phash', async () => {
   });
 });
 
-describe('store guild isolation', async () => {
-  // Re-import after store file reset — JsonStore loads at import time.
-  // We patch via public API which writes to the isolated file.
+describe('store guild isolation (memory / postgres API)', async () => {
   const store = await import('../store.js');
 
-  it('keeps guild A targets out of guild B', () => {
-    store.addTarget('guild-a', {
+  before(() => {
+    store.__resetMemoryStore();
+  });
+
+  afterEach(() => {
+    store.__resetMemoryStore();
+  });
+
+  it('keeps guild A targets out of guild B', async () => {
+    await store.addTarget('guild-a', {
       name: 'Scam A',
       perceptualHash: 'aaaaaaaaaaaaaaaa',
       blockHash: 'b'.repeat(64),
       createdBy: 'u1',
     });
-    store.addTarget('guild-b', {
+    await store.addTarget('guild-b', {
       name: 'Scam B',
       perceptualHash: 'cccccccccccccccc',
       blockHash: 'd'.repeat(64),
       createdBy: 'u2',
     });
-    const a = store.listTargets('guild-a');
-    const b = store.listTargets('guild-b');
+    const a = await store.listTargets('guild-a');
+    const b = await store.listTargets('guild-b');
     assert.equal(a.length, 1);
     assert.equal(b.length, 1);
     assert.equal(a[0].name, 'Scam A');
@@ -143,18 +118,18 @@ describe('store guild isolation', async () => {
     assert.notEqual(a[0].targetId, b[0].targetId);
   });
 
-  it('watches channels per guild', () => {
-    store.addChannel('guild-a', 'chan-1');
-    store.addChannel('guild-a', 'chan-2');
-    assert.equal(store.isChannelWatched('guild-a', 'chan-1'), true);
-    assert.equal(store.isChannelWatched('guild-b', 'chan-1'), false);
-    store.removeChannel('guild-a', 'chan-1');
-    assert.equal(store.isChannelWatched('guild-a', 'chan-1'), false);
+  it('watches channels per guild', async () => {
+    await store.addChannel('guild-a', 'chan-1');
+    await store.addChannel('guild-a', 'chan-2');
+    assert.equal(await store.isChannelWatched('guild-a', 'chan-1'), true);
+    assert.equal(await store.isChannelWatched('guild-b', 'chan-1'), false);
+    await store.removeChannel('guild-a', 'chan-1');
+    assert.equal(await store.isChannelWatched('guild-a', 'chan-1'), false);
   });
 
-  it('patches threshold and action', () => {
-    store.patchGuildConfig('guild-a', { threshold: 0.85, action: 'log' });
-    const cfg = store.getGuildConfig('guild-a');
+  it('patches threshold and action', async () => {
+    await store.patchGuildConfig('guild-a', { threshold: 0.85, action: 'log' });
+    const cfg = await store.getGuildConfig('guild-a');
     assert.equal(cfg.threshold, 0.85);
     assert.equal(cfg.action, 'log');
   });
@@ -164,11 +139,15 @@ describe('detector two-stage (local only)', async () => {
   const store = await import('../store.js');
   const { analyzeTargetBuffer, matchAgainstTargets, testAgainstTargets } = await import('../detector.js');
 
+  afterEach(() => {
+    store.__resetMemoryStore();
+  });
+
   it('matches exact / re-encoded image via pHash without Jina', async () => {
     const guildId = 'guild-detect';
     const src = await makePatternPng({ seed: 1234, size: 200 });
     const analyzed = await analyzeTargetBuffer(src, { withEmbedding: false });
-    store.addTarget(guildId, {
+    await store.addTarget(guildId, {
       name: 'Pattern 1234',
       perceptualHash: analyzed.dHash,
       blockHash: analyzed.blockHash,
@@ -176,26 +155,22 @@ describe('detector two-stage (local only)', async () => {
       contentHash: analyzed.contentHash,
       createdBy: 'tester',
     });
-    store.addChannel(guildId, 'c1');
+    await store.addChannel(guildId, 'c1');
 
-    // Same bytes
     const exact = await matchAgainstTargets(guildId, src);
     assert.ok(exact, 'exact should match');
     assert.ok(exact.score >= 0.95);
     assert.ok(['exact', 'phash'].includes(exact.method));
 
-    // JPEG re-encode
     const jpeg = await sharp(src).jpeg({ quality: 70 }).toBuffer();
     const soft = await matchAgainstTargets(guildId, jpeg);
     assert.ok(soft, 'jpeg re-encode should match via phash');
     assert.ok(soft.score >= 0.9);
 
-    // Completely different
     const other = await makePatternPng({ seed: 7777, size: 200 });
     const miss = await matchAgainstTargets(guildId, other);
     assert.equal(miss, null);
 
-    // testAgainstTargets reports scores even on miss
     const report = await testAgainstTargets(guildId, other);
     assert.equal(report.match, false);
     assert.ok(report.results.length >= 1);
@@ -205,7 +180,7 @@ describe('detector two-stage (local only)', async () => {
     const guildId = 'guild-crop';
     const src = await makePatternPng({ seed: 555, size: 240 });
     const analyzed = await analyzeTargetBuffer(src, { withEmbedding: false });
-    store.addTarget(guildId, {
+    await store.addTarget(guildId, {
       name: 'Crop Target',
       perceptualHash: analyzed.dHash,
       blockHash: analyzed.blockHash,
@@ -214,9 +189,6 @@ describe('detector two-stage (local only)', async () => {
     });
 
     const cropped = await makeSlightCrop(src);
-    // Without Jina, only obvious pHash matches count. Crop may or may not
-    // fall into the obvious band — assert the pipeline does not throw and
-    // returns either a match or null cleanly.
     const result = await matchAgainstTargets(guildId, cropped);
     assert.ok(result === null || (result.score > 0 && result.target));
   });

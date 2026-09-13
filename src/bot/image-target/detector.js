@@ -61,7 +61,7 @@ function localDistances(fp, target) {
  * @returns {null | object} strongest match above threshold, or null
  */
 export async function matchAgainstTargets(guildId, buffer) {
-  const targets = listTargets(guildId, { includeDisabled: false });
+  const targets = await listTargets(guildId, { includeDisabled: false });
   if (!targets.length) return null;
 
   const fp = await fingerprintImage(buffer);
@@ -138,7 +138,7 @@ export async function matchAgainstTargets(guildId, buffer) {
   }
 
   if (!bestEmb) return null;
-  const threshold = effectiveThreshold(guildId, bestEmb.target);
+  const threshold = await effectiveThreshold(guildId, bestEmb.target);
   if (bestEmb.score >= threshold) return bestEmb;
   return null;
 }
@@ -148,7 +148,7 @@ export async function matchAgainstTargets(guildId, buffer) {
  * when below threshold (so admins can tune).
  */
 export async function testAgainstTargets(guildId, buffer) {
-  const targets = listTargets(guildId, { includeDisabled: false });
+  const targets = await listTargets(guildId, { includeDisabled: false });
   if (!targets.length) {
     return { match: false, results: [], message: 'No enabled targets in this server.' };
   }
@@ -188,7 +188,7 @@ export async function testAgainstTargets(guildId, buffer) {
   }
 
   for (const r of results) {
-    const threshold = effectiveThreshold(guildId, r.target);
+    const threshold = await effectiveThreshold(guildId, r.target);
 
     if (r.target.contentHash && r.target.contentHash === fp.contentHash) {
       r.finalScore = 1;

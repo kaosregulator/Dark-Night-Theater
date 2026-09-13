@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { JsonStore } from '../../services/json-store.js';
+import { query, withClient, hasDatabaseUrl } from '../../db/postgres.js';
 import {
   DEFAULT_ACTION,
   DEFAULT_ESCALATION,
@@ -7,30 +7,17 @@ import {
   DEFAULT_TIMEOUT_MS,
   MAX_DETECTION_LOG,
 } from './constants.js';
+import * as memory from './store-memory.js';
 
 /**
- * Per-guild image-target configuration + target records + detection log.
+ * Image Target Watcher — Postgres-backed store (Railway DATABASE_URL).
  *
- * Shape:
- * {
- *   guilds: {
- *     [guildId]: {
- *       channels: string[],
- *       action: string,
- *       threshold: number,
- *       escalationEnabled: boolean,
- *       escalation: string[],
- *       timeoutMs: number,
- *       logChannelId: string | null,
- *       targets: { [targetId]: Target },
- *       detections: Detection[],
- *       strikes: { [userId]: number },
- *     }
- *   }
- * }
+ * Falls back to an in-memory store only when:
+ *   - IMAGE_TARGET_MEMORY=1, or
+ *   - NODE_ENV=test / running under node:test without DATABASE_URL
+ *
+ * Production requires DATABASE_URL. JSON file storage has been removed.
  */
-
-const store = new JsonStore('image-targets.json', { guilds: {} });
 
 export const DEFAULT_GUILD = {
   channels: [],
@@ -40,60 +27,151 @@ export const DEFAULT_GUILD = {
   escalation: [...DEFAULT_ESCALATION],
   timeoutMs: DEFAULT_TIMEOUT_MS,
   logChannelId: null,
-  targets: {},
-  detections: [],
-  strikes: {},
 };
 
-function ensureGuild(guildId) {
-  if (!store.data.guilds[guildId]) {
-    store.data.guilds[guildId] = structuredClone(DEFAULT_GUILD);
-  } else {
-    // Merge defaults for forward-compat when new fields are added.
-    store.data.guilds[guildId] = {
-      ...DEFAULT_GUILD,
-      ...store.data.guilds[guildId],
-      targets: store.data.guilds[guildId].targets || {},
-      detections: store.data.guilds[guildId].detections || [],
-      strikes: store.data.guilds[guildId].strikes || {},
-      channels: store.data.guilds[guildId].channels || [],
-      escalation: store.data.guilds[guildId].escalation || [...DEFAULT_ESCALATION],
-    };
+function useMemory() {
+  if (process.env.IMAGE_TARGET_MEMORY === '1') return true;
+  if (hasDatabaseUrl()) return false;
+  // Allow unit tests without a live DB.
+  if (process.env.NODE_ENV === 'test' || process.env.npm_lifecycle_event?.includes('test')) {
+    return true;
   }
-  return store.data.guilds[guildId];
+  return false;
 }
 
-export function getGuildConfig(guildId) {
-  return structuredClone(ensureGuild(guildId));
+function mapSettingsRow(row) {
+  if (!row) {
+    return { ...DEFAULT_GUILD };
+  }
+  return {
+    channels: row.channels || [],
+    action: row.action || DEFAULT_ACTION,
+    threshold: Number(row.threshold ?? DEFAULT_SIMILARITY_THRESHOLD),
+    escalationEnabled: Boolean(row.escalation_enabled),
+    escalation: row.escalation?.length ? row.escalation : [...DEFAULT_ESCALATION],
+    timeoutMs: Number(row.timeout_ms ?? DEFAULT_TIMEOUT_MS),
+    logChannelId: row.log_channel_id || null,
+  };
 }
 
-export function patchGuildConfig(guildId, patch) {
-  const g = ensureGuild(guildId);
-  Object.assign(g, patch);
-  store.save();
-  return structuredClone(g);
+function mapTargetRow(row) {
+  if (!row) return null;
+  let embedding = row.embedding;
+  if (typeof embedding === 'string') {
+    try { embedding = JSON.parse(embedding); } catch { embedding = null; }
+  }
+  return {
+    guildId: row.guild_id,
+    targetId: row.target_id,
+    name: row.name,
+    perceptualHash: row.perceptual_hash,
+    blockHash: row.block_hash,
+    embedding,
+    embeddingModel: row.embedding_model,
+    contentHash: row.content_hash,
+    mimeType: row.mime_type,
+    mediaKind: row.media_kind || 'image',
+    similarityThreshold: row.similarity_threshold == null ? null : Number(row.similarity_threshold),
+    createdBy: row.created_by,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    enabled: Boolean(row.enabled),
+  };
 }
 
-export function listTargets(guildId, { includeDisabled = true } = {}) {
-  const g = ensureGuild(guildId);
-  const list = Object.values(g.targets);
-  return includeDisabled ? list : list.filter((t) => t.enabled);
+async function ensureGuildRow(guildId, client = null) {
+  const run = client ? client.query.bind(client) : query;
+  await run(
+    `INSERT INTO image_target_guild_settings (guild_id)
+     VALUES ($1)
+     ON CONFLICT (guild_id) DO NOTHING`,
+    [guildId],
+  );
 }
 
-export function getTarget(guildId, targetId) {
-  return ensureGuild(guildId).targets[targetId] || null;
+export async function getGuildConfig(guildId) {
+  if (useMemory()) return memory.getGuildConfig(guildId);
+
+  await ensureGuildRow(guildId);
+  const res = await query(
+    `SELECT * FROM image_target_guild_settings WHERE guild_id = $1`,
+    [guildId],
+  );
+  return mapSettingsRow(res.rows[0]);
 }
 
-export function findTargetByName(guildId, name) {
+export async function patchGuildConfig(guildId, patch) {
+  if (useMemory()) return memory.patchGuildConfig(guildId, patch);
+
+  await ensureGuildRow(guildId);
+  const current = await getGuildConfig(guildId);
+  const next = { ...current, ...patch };
+
+  await query(
+    `UPDATE image_target_guild_settings SET
+       channels = $2,
+       action = $3,
+       threshold = $4,
+       escalation_enabled = $5,
+       escalation = $6,
+       timeout_ms = $7,
+       log_channel_id = $8,
+       updated_at = NOW()
+     WHERE guild_id = $1`,
+    [
+      guildId,
+      next.channels || [],
+      next.action || DEFAULT_ACTION,
+      next.threshold ?? DEFAULT_SIMILARITY_THRESHOLD,
+      Boolean(next.escalationEnabled),
+      next.escalation?.length ? next.escalation : [...DEFAULT_ESCALATION],
+      next.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      next.logChannelId || null,
+    ],
+  );
+  return getGuildConfig(guildId);
+}
+
+export async function listTargets(guildId, { includeDisabled = true } = {}) {
+  if (useMemory()) return memory.listTargets(guildId, { includeDisabled });
+
+  await ensureGuildRow(guildId);
+  const res = includeDisabled
+    ? await query(
+      `SELECT * FROM image_targets WHERE guild_id = $1 ORDER BY created_at ASC`,
+      [guildId],
+    )
+    : await query(
+      `SELECT * FROM image_targets WHERE guild_id = $1 AND enabled = TRUE ORDER BY created_at ASC`,
+      [guildId],
+    );
+  return res.rows.map(mapTargetRow);
+}
+
+export async function getTarget(guildId, targetId) {
+  if (useMemory()) return memory.getTarget(guildId, targetId);
+
+  const res = await query(
+    `SELECT * FROM image_targets WHERE guild_id = $1 AND target_id = $2`,
+    [guildId, targetId],
+  );
+  return mapTargetRow(res.rows[0]);
+}
+
+export async function findTargetByName(guildId, name) {
+  if (useMemory()) return memory.findTargetByName(guildId, name);
+
   const needle = String(name || '').trim().toLowerCase();
-  return listTargets(guildId).find((t) => t.name.toLowerCase() === needle) || null;
+  const res = await query(
+    `SELECT * FROM image_targets
+     WHERE guild_id = $1 AND LOWER(name) = $2
+     ORDER BY created_at ASC
+     LIMIT 1`,
+    [guildId, needle],
+  );
+  return mapTargetRow(res.rows[0]);
 }
 
-/**
- * Persist a new target image. Embedding may be null when Jina is unavailable —
- * local pHash still works as a fallback.
- */
-export function addTarget(guildId, {
+export async function addTarget(guildId, {
   name,
   perceptualHash,
   blockHash = null,
@@ -105,109 +183,232 @@ export function addTarget(guildId, {
   threshold = null,
   mediaKind = 'image',
 }) {
-  const g = ensureGuild(guildId);
-  const targetId = randomUUID();
-  const target = {
-    guildId,
-    targetId,
-    name: name || `Target ${Object.keys(g.targets).length + 1}`,
-    perceptualHash,
-    blockHash,
-    embedding,
-    embeddingModel,
-    contentHash,
-    mimeType,
-    mediaKind,
-    similarityThreshold: threshold,
-    createdBy,
-    createdAt: new Date().toISOString(),
-    enabled: true,
-  };
-  g.targets[targetId] = target;
-  store.save();
-  return structuredClone(target);
+  if (useMemory()) {
+    return memory.addTarget(guildId, {
+      name, perceptualHash, blockHash, embedding, embeddingModel,
+      contentHash, mimeType, createdBy, threshold, mediaKind,
+    });
+  }
+
+  return withClient(async (client) => {
+    await ensureGuildRow(guildId, client);
+    const targetId = randomUUID();
+    const displayName = name || `Target`;
+    const res = await client.query(
+      `INSERT INTO image_targets (
+         target_id, guild_id, name, perceptual_hash, block_hash,
+         embedding, embedding_model, content_hash, mime_type, media_kind,
+         similarity_threshold, created_by, enabled
+       ) VALUES (
+         $1,$2,$3,$4,$5,
+         $6::jsonb,$7,$8,$9,$10,
+         $11,$12, TRUE
+       )
+       RETURNING *`,
+      [
+        targetId,
+        guildId,
+        displayName,
+        perceptualHash,
+        blockHash,
+        embedding == null ? null : JSON.stringify(embedding),
+        embeddingModel,
+        contentHash,
+        mimeType,
+        mediaKind || 'image',
+        threshold,
+        createdBy,
+      ],
+    );
+    return mapTargetRow(res.rows[0]);
+  });
 }
 
-export function updateTarget(guildId, targetId, patch) {
-  const g = ensureGuild(guildId);
-  const t = g.targets[targetId];
-  if (!t) return null;
-  Object.assign(t, patch);
-  store.save();
-  return structuredClone(t);
+export async function updateTarget(guildId, targetId, patch) {
+  if (useMemory()) return memory.updateTarget(guildId, targetId, patch);
+
+  const current = await getTarget(guildId, targetId);
+  if (!current) return null;
+
+  const next = { ...current, ...patch };
+  const res = await query(
+    `UPDATE image_targets SET
+       name = $3,
+       perceptual_hash = $4,
+       block_hash = $5,
+       embedding = $6::jsonb,
+       embedding_model = $7,
+       content_hash = $8,
+       mime_type = $9,
+       media_kind = $10,
+       similarity_threshold = $11,
+       enabled = $12
+     WHERE guild_id = $1 AND target_id = $2
+     RETURNING *`,
+    [
+      guildId,
+      targetId,
+      next.name,
+      next.perceptualHash,
+      next.blockHash,
+      next.embedding == null ? null : JSON.stringify(next.embedding),
+      next.embeddingModel,
+      next.contentHash,
+      next.mimeType,
+      next.mediaKind || 'image',
+      next.similarityThreshold,
+      Boolean(next.enabled),
+    ],
+  );
+  return mapTargetRow(res.rows[0]);
 }
 
-export function removeTarget(guildId, targetId) {
-  const g = ensureGuild(guildId);
-  if (!g.targets[targetId]) return false;
-  delete g.targets[targetId];
-  store.save();
-  return true;
+export async function removeTarget(guildId, targetId) {
+  if (useMemory()) return memory.removeTarget(guildId, targetId);
+
+  const res = await query(
+    `DELETE FROM image_targets WHERE guild_id = $1 AND target_id = $2`,
+    [guildId, targetId],
+  );
+  return res.rowCount > 0;
 }
 
-export function setChannels(guildId, channelIds) {
+export async function setChannels(guildId, channelIds) {
   return patchGuildConfig(guildId, {
     channels: [...new Set(channelIds.map(String))],
   });
 }
 
-export function addChannel(guildId, channelId) {
-  const g = ensureGuild(guildId);
-  if (!g.channels.includes(channelId)) {
-    g.channels.push(channelId);
-    store.save();
+export async function addChannel(guildId, channelId) {
+  if (useMemory()) return memory.addChannel(guildId, channelId);
+
+  const cfg = await getGuildConfig(guildId);
+  if (!cfg.channels.includes(channelId)) {
+    cfg.channels.push(channelId);
+    await patchGuildConfig(guildId, { channels: cfg.channels });
   }
-  return structuredClone(g.channels);
+  return (await getGuildConfig(guildId)).channels;
 }
 
-export function removeChannel(guildId, channelId) {
-  const g = ensureGuild(guildId);
-  g.channels = g.channels.filter((id) => id !== channelId);
-  store.save();
-  return structuredClone(g.channels);
+export async function removeChannel(guildId, channelId) {
+  if (useMemory()) return memory.removeChannel(guildId, channelId);
+
+  const cfg = await getGuildConfig(guildId);
+  await patchGuildConfig(guildId, {
+    channels: cfg.channels.filter((id) => id !== channelId),
+  });
+  return (await getGuildConfig(guildId)).channels;
 }
 
-export function isChannelWatched(guildId, channelId) {
-  const g = ensureGuild(guildId);
-  return g.channels.includes(channelId);
+export async function isChannelWatched(guildId, channelId) {
+  if (useMemory()) return memory.isChannelWatched(guildId, channelId);
+
+  const res = await query(
+    `SELECT 1 FROM image_target_guild_settings
+     WHERE guild_id = $1 AND $2 = ANY(channels)
+     LIMIT 1`,
+    [guildId, channelId],
+  );
+  return res.rowCount > 0;
 }
 
-export function recordDetection(guildId, entry) {
-  const g = ensureGuild(guildId);
-  const row = {
-    id: randomUUID(),
-    guildId,
-    timestamp: new Date().toISOString(),
-    ...entry,
+export async function recordDetection(guildId, entry) {
+  if (useMemory()) return memory.recordDetection(guildId, entry);
+
+  const id = randomUUID();
+  const res = await query(
+    `INSERT INTO image_target_detections (
+       id, guild_id, user_id, channel_id, message_id,
+       target_id, target_name, similarity, method, action, deleted
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+     RETURNING *`,
+    [
+      id,
+      guildId,
+      entry.userId,
+      entry.channelId,
+      entry.messageId,
+      entry.targetId || null,
+      entry.targetName || null,
+      entry.similarity ?? null,
+      entry.method || null,
+      entry.action || null,
+      Boolean(entry.deleted),
+    ],
+  );
+
+  // Trim old rows per guild (best-effort).
+  await query(
+    `DELETE FROM image_target_detections
+     WHERE guild_id = $1
+       AND id NOT IN (
+         SELECT id FROM image_target_detections
+         WHERE guild_id = $1
+         ORDER BY created_at DESC
+         LIMIT $2
+       )`,
+    [guildId, MAX_DETECTION_LOG],
+  ).catch(() => {});
+
+  const row = res.rows[0];
+  return {
+    id: row.id,
+    guildId: row.guild_id,
+    userId: row.user_id,
+    channelId: row.channel_id,
+    messageId: row.message_id,
+    targetId: row.target_id,
+    targetName: row.target_name,
+    similarity: row.similarity == null ? null : Number(row.similarity),
+    method: row.method,
+    action: row.action,
+    deleted: Boolean(row.deleted),
+    timestamp: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
   };
-  g.detections.unshift(row);
-  if (g.detections.length > MAX_DETECTION_LOG) {
-    g.detections.length = MAX_DETECTION_LOG;
-  }
-  store.save();
-  return structuredClone(row);
 }
 
-export function getStrikes(guildId, userId) {
-  return ensureGuild(guildId).strikes[userId] || 0;
+export async function getStrikes(guildId, userId) {
+  if (useMemory()) return memory.getStrikes(guildId, userId);
+
+  const res = await query(
+    `SELECT count FROM image_target_strikes WHERE guild_id = $1 AND user_id = $2`,
+    [guildId, userId],
+  );
+  return res.rows[0]?.count || 0;
 }
 
-export function incrementStrike(guildId, userId) {
-  const g = ensureGuild(guildId);
-  g.strikes[userId] = (g.strikes[userId] || 0) + 1;
-  store.save();
-  return g.strikes[userId];
+export async function incrementStrike(guildId, userId) {
+  if (useMemory()) return memory.incrementStrike(guildId, userId);
+
+  const res = await query(
+    `INSERT INTO image_target_strikes (guild_id, user_id, count, updated_at)
+     VALUES ($1, $2, 1, NOW())
+     ON CONFLICT (guild_id, user_id)
+     DO UPDATE SET count = image_target_strikes.count + 1, updated_at = NOW()
+     RETURNING count`,
+    [guildId, userId],
+  );
+  return res.rows[0].count;
 }
 
-export function resetStrikes(guildId, userId) {
-  const g = ensureGuild(guildId);
-  delete g.strikes[userId];
-  store.save();
+export async function resetStrikes(guildId, userId) {
+  if (useMemory()) return memory.resetStrikes(guildId, userId);
+
+  await query(
+    `DELETE FROM image_target_strikes WHERE guild_id = $1 AND user_id = $2`,
+    [guildId, userId],
+  );
 }
 
-/** Resolve effective threshold for a target (per-target override or guild default). */
-export function effectiveThreshold(guildId, target) {
-  const g = ensureGuild(guildId);
+export async function effectiveThreshold(guildId, target) {
+  if (useMemory()) return memory.effectiveThreshold(guildId, target);
+
   if (target?.similarityThreshold != null) return target.similarityThreshold;
-  return g.threshold;
+  const cfg = await getGuildConfig(guildId);
+  return cfg.threshold;
+}
+
+/** Test helper — clears memory backend only. */
+export function __resetMemoryStore() {
+  return memory.__resetMemoryStore();
 }

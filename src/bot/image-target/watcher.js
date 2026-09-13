@@ -120,9 +120,9 @@ async function loadCandidate(candidate) {
 export async function handleImageTargetMessage(message) {
   try {
     if (!message.guild || message.author?.bot) return;
-    if (!isChannelWatched(message.guild.id, message.channel.id)) return;
+    if (!(await isChannelWatched(message.guild.id, message.channel.id))) return;
 
-    const targets = listTargets(message.guild.id, { includeDisabled: false });
+    const targets = await listTargets(message.guild.id, { includeDisabled: false });
     if (!targets.length) return;
 
     if (inflight.has(message.id)) return;

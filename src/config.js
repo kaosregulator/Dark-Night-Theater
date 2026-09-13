@@ -53,6 +53,12 @@ export const config = {
   jina: {
     apiKey: str('JINA_API_KEY'),
   },
+  // Railway Postgres (required for Image Target Watcher in production).
+  // In Railway: Dark-Night-Theater → Variables → add reference
+  //   DATABASE_URL = ${{Postgres.DATABASE_URL}}
+  database: {
+    url: str('DATABASE_URL'),
+  },
 };
 
 // Which subsystems are ready. The media host needs no secrets, so it's always on.

@@ -83,10 +83,10 @@ async function meCan(guild, perm) {
  */
 export async function applyDetectionAction(message, match) {
   const guildId = message.guild.id;
-  const cfg = getGuildConfig(guildId);
+  const cfg = await getGuildConfig(guildId);
   let action = ACTIONS.includes(cfg.action) ? cfg.action : 'delete_log';
 
-  let strikes = getStrikes(guildId, message.author.id);
+  let strikes = await getStrikes(guildId, message.author.id);
   if (cfg.escalationEnabled && Array.isArray(cfg.escalation) && cfg.escalation.length) {
     const idx = Math.min(strikes, cfg.escalation.length - 1);
     action = cfg.escalation[idx] || action;
@@ -134,9 +134,9 @@ export async function applyDetectionAction(message, match) {
     }
   }
 
-  strikes = incrementStrike(guildId, message.author.id);
+  strikes = await incrementStrike(guildId, message.author.id);
 
-  const detection = recordDetection(guildId, {
+  const detection = await recordDetection(guildId, {
     userId: message.author.id,
     channelId: message.channel.id,
     messageId: message.id,

@@ -4,6 +4,7 @@ import {
   SlashCommandBuilder,
 } from 'discord.js';
 import { log } from '../../logger.js';
+import { hasDatabaseUrl } from '../../db/postgres.js';
 import { canManage } from '../permissions.js';
 import { pct } from './actions.js';
 import { ACTIONS, DEFAULT_SIMILARITY_THRESHOLD } from './constants.js';
@@ -166,8 +167,8 @@ export const imageTrackCommand = buildCommand(
   'Alias for /image-target — watch for target images. Admin only.',
 );
 
-function resolveTarget(guildId, query) {
-  return getTarget(guildId, query) || findTargetByName(guildId, query);
+async function resolveTarget(guildId, query) {
+  return (await getTarget(guildId, query)) || (await findTargetByName(guildId, query));
 }
 
 async function bufferFromAttachment(attachment) {
@@ -206,6 +207,15 @@ export async function handleImageTargetCommand(interaction) {
   if (!canManage(interaction.member)) {
     return interaction.reply({
       content: '❌ You need **Manage Server** (or a manager role) to use this.',
+      ephemeral: true,
+    });
+  }
+
+  if (!hasDatabaseUrl() && process.env.IMAGE_TARGET_MEMORY !== '1') {
+    return interaction.reply({
+      content:
+        '❌ Postgres is not configured. On Railway, set `DATABASE_URL=${{Postgres.DATABASE_URL}}` ' +
+        'on the Dark-Night-Theater service, then redeploy.',
       ephemeral: true,
     });
   }
@@ -259,7 +269,7 @@ async function cmdAdd(interaction, guildId) {
   const { buffer, mediaKind } = await bufferFromAttachment(attachment);
   const analyzed = await analyzeTargetBuffer(buffer, { withEmbedding: true });
 
-  const target = addTarget(guildId, {
+  const target = await addTarget(guildId, {
     name,
     perceptualHash: analyzed.dHash,
     blockHash: analyzed.blockHash,
@@ -289,7 +299,7 @@ async function cmdAdd(interaction, guildId) {
 }
 
 async function cmdList(interaction, guildId) {
-  const targets = listTargets(guildId);
+  const targets = await listTargets(guildId);
   if (!targets.length) {
     return interaction.reply({
       content: 'No image targets yet. Use `/image-target add`.',
@@ -310,11 +320,11 @@ async function cmdList(interaction, guildId) {
 
 async function cmdRemove(interaction, guildId) {
   const q = interaction.options.getString('target', true);
-  const t = resolveTarget(guildId, q);
+  const t = await resolveTarget(guildId, q);
   if (!t) {
     return interaction.reply({ content: 'Target not found.', ephemeral: true });
   }
-  removeTarget(guildId, t.targetId);
+  await removeTarget(guildId, t.targetId);
   return interaction.reply({
     content: `🗑️ Removed target **${t.name}**.`,
     ephemeral: true,
@@ -323,11 +333,11 @@ async function cmdRemove(interaction, guildId) {
 
 async function cmdToggle(interaction, guildId, enabled) {
   const q = interaction.options.getString('target', true);
-  const t = resolveTarget(guildId, q);
+  const t = await resolveTarget(guildId, q);
   if (!t) {
     return interaction.reply({ content: 'Target not found.', ephemeral: true });
   }
-  updateTarget(guildId, t.targetId, { enabled });
+  await updateTarget(guildId, t.targetId, { enabled });
   return interaction.reply({
     content: `${enabled ? '🟢 Enabled' : '🔴 Disabled'} **${t.name}**.`,
     ephemeral: true,
@@ -384,7 +394,7 @@ async function cmdTest(interaction, guildId) {
 async function cmdChannel(interaction, guildId) {
   const action = interaction.options.getString('action', true);
   const channel = interaction.options.getChannel('channel');
-  const cfg = getGuildConfig(guildId);
+  const cfg = await getGuildConfig(guildId);
 
   if (action === 'list') {
     const list = cfg.channels.length
@@ -401,14 +411,14 @@ async function cmdChannel(interaction, guildId) {
   }
 
   if (action === 'remove') {
-    removeChannel(guildId, channel.id);
+    await removeChannel(guildId, channel.id);
     return interaction.reply({
       content: `Stopped watching ${channel}.`,
       ephemeral: true,
     });
   }
 
-  addChannel(guildId, channel.id);
+  await addChannel(guildId, channel.id);
   return interaction.reply({
     content: `✅ Now watching ${channel} for target images.`,
     ephemeral: true,
@@ -417,7 +427,7 @@ async function cmdChannel(interaction, guildId) {
 
 async function cmdThreshold(interaction, guildId) {
   const value = interaction.options.getNumber('value', true);
-  patchGuildConfig(guildId, { threshold: value });
+  await patchGuildConfig(guildId, { threshold: value });
   return interaction.reply({
     content:
       `✅ Similarity threshold set to **${value}** ` +
@@ -432,7 +442,7 @@ async function cmdAction(interaction, guildId) {
   if (!ACTIONS.includes(mode)) {
     return interaction.reply({ content: 'Invalid action.', ephemeral: true });
   }
-  patchGuildConfig(guildId, { action: mode });
+  await patchGuildConfig(guildId, { action: mode });
   return interaction.reply({
     content: `✅ Match action set to \`${mode}\` . Severe actions stay off unless you pick them.`,
     ephemeral: true,
@@ -441,7 +451,7 @@ async function cmdAction(interaction, guildId) {
 
 async function cmdLogChannel(interaction, guildId) {
   const channel = interaction.options.getChannel('channel');
-  patchGuildConfig(guildId, { logChannelId: channel?.id || null });
+  await patchGuildConfig(guildId, { logChannelId: channel?.id || null });
   return interaction.reply({
     content: channel
       ? `✅ Detection logs → ${channel}`
@@ -452,7 +462,7 @@ async function cmdLogChannel(interaction, guildId) {
 
 async function cmdEscalation(interaction, guildId) {
   const enabled = interaction.options.getBoolean('enabled', true);
-  patchGuildConfig(guildId, { escalationEnabled: enabled });
+  await patchGuildConfig(guildId, { escalationEnabled: enabled });
   return interaction.reply({
     content: enabled
       ? '✅ Escalation ON: 1st warn → 2nd timeout → 3rd kick → 4th ban.'
@@ -462,8 +472,8 @@ async function cmdEscalation(interaction, guildId) {
 }
 
 async function cmdStatus(interaction, guildId) {
-  const cfg = getGuildConfig(guildId);
-  const targets = listTargets(guildId);
+  const cfg = await getGuildConfig(guildId);
+  const targets = await listTargets(guildId);
   const enabled = targets.filter((t) => t.enabled).length;
   const jina = Boolean(process.env.JINA_API_KEY?.trim());
   const embed = new EmbedBuilder()
@@ -489,6 +499,11 @@ async function cmdStatus(interaction, guildId) {
         name: 'Log channel',
         value: cfg.logChannelId ? `<#${cfg.logChannelId}>` : '_watched channel_',
         inline: true,
+      },
+      {
+        name: 'Postgres',
+        value: hasDatabaseUrl() ? '✅ DATABASE_URL set' : '❌ DATABASE_URL missing',
+        inline: false,
       },
       {
         name: 'Jina CLIP',

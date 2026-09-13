@@ -43,8 +43,16 @@ duplicates still match).
 
 1. Enable **Message Content Intent** in the Discord Developer Portal
    (Bot → Privileged Gateway Intents).
-2. Optional: set `JINA_API_KEY` in `.env` (free key: https://jina.ai/?sui=apikey).
-3. Restart the bot and re-register slash commands:
+2. **Postgres (required in production)** — you already have a Railway Postgres
+   service. Share its URL into the bot service:
+   - Railway → **Dark-Night-Theater** → **Variables** → **New Variable**
+   - Name: `DATABASE_URL`
+   - Value: `${{Postgres.DATABASE_URL}}`  (variable reference)
+   - Redeploy the bot. On boot it auto-creates tables:
+     `image_target_guild_settings`, `image_targets`,
+     `image_target_detections`, `image_target_strikes`.
+3. Optional: set `JINA_API_KEY` (free key: https://jina.ai/?sui=apikey).
+4. Re-register slash commands and restart:
 
 ```bash
 npm run register
@@ -54,6 +62,9 @@ npm start
 Bot needs permissions in watched channels: **View Channel**, **Read Message
 History**, **Manage Messages** (to delete), plus Kick/Ban/Moderate Members if
 you enable those actions.
+
+> JSON file storage (`data/image-targets.json`) has been removed. Production
+> uses Postgres only.
 
 ## Commands
 
@@ -97,10 +108,12 @@ Bot:    🚨 Target image detected — 97.4% · deletes message · logs
 | `providers/jina.js` | Jina CLIP v2 + embedding cache |
 | `detector.js` | Two-stage matcher |
 | `download.js` | Safe download, SSRF guards, video frame via ffmpeg |
-| `store.js` | JSON store (`data/image-targets.json`) |
+| `store.js` | **Postgres** repository (`DATABASE_URL`) |
+| `migrate.js` | Idempotent schema migration on boot |
 | `actions.js` | Log / delete / warn / timeout / kick / ban |
 | `commands.js` | Slash command handlers |
 | `watcher.js` | `messageCreate` / `messageUpdate` listener |
+| `../../db/postgres.js` | Shared `pg` pool (Railway TLS) |
 
 ## Security
 
