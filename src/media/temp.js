@@ -176,9 +176,10 @@ async function prepareForWeb(session) {
   logProbe(session.id, info);
   session.probe = info;
 
-  if (!info?.ok && failClosed) {
+  // Probe failure must never fail-open to progressive — Discord black-screens HEVC.
+  if (!info?.ok) {
     info = {
-      ok: true,
+      ok: false,
       webPlayable: false,
       videoCodec: info?.videoCodec || null,
       audioCodec: info?.audioCodec || null,
@@ -194,11 +195,9 @@ async function prepareForWeb(session) {
     session.codecTip = info.webPlayable && !info.oddSize ? null : codecTip(info);
   }
 
-  // Convert when probe says so, OR when we already held a suspect upload.
-  // Safe H.264 episodes skip HLS and keep progressive playback.
-  const needsConvert = Boolean(
-    (info?.ok && (!info.webPlayable || info.oddSize)) || (failClosed && !info?.webPlayable)
-  );
+  // Convert when probe says unplayable/odd, OR probe failed.
+  // Safe H.264 episodes (probe ok + webPlayable) skip HLS and keep progressive.
+  const needsConvert = Boolean(!info?.ok || !info.webPlayable || info.oddSize);
   session.converting = needsConvert;
   session.conversionState = needsConvert ? 'converting' : null;
 
@@ -251,14 +250,18 @@ async function prepareForWeb(session) {
     log.warn(`temp ${session.id}: conversion failed — ${err?.message || err}`);
     session.converting = false;
     session.conversionState = 'failed';
+    session.convertFailed = true;
     session.webPlayable = false;
     session.codecTip = FAIL_TIP;
+    // Keep kind/file but never advertise a playable progressive after failure —
+    // client must show the fail tip instead of re-attaching a black HEVC src.
     if (session.channelId) {
       import('../services/sessions.js')
         .then(({ setPlaybackMeta }) => {
           setPlaybackMeta(session.channelId, {
             converting: false,
             webPlayable: false,
+            convertFailed: true,
             codecTip: FAIL_TIP,
             bumpRevision: true,
           });

@@ -88,6 +88,7 @@ export function attachLibraryPartyConversion(
       setPlaybackMeta(channelId, {
         converting: false,
         webPlayable: false,
+        convertFailed: true,
         codecTip: FAIL,
         bumpRevision: true,
       });

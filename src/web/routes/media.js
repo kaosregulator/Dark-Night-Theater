@@ -61,6 +61,10 @@ function handle(req, res, isHead) {
   if (!verifyMediaToken(id, req.query.t)) {
     return res.status(403).end('Forbidden');
   }
+
+  // Do NOT redirect progressive /media/:id → .m3u8 here. Discord Chromium cannot
+  // play HLS without hls.js; setPlaybackSource must swap clients onto the manifest.
+
   const file = store.filePath(id);
   if (!file || !fs.existsSync(file)) return res.status(404).end('Not found');
 

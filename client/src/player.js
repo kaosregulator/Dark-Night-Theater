@@ -373,7 +373,7 @@ export class TheaterPlayer {
     if (this._converting || this._awaitingConversion) {
       this.onLocalControl({
         type: 'converting',
-        detail: 'Converting video for Discord… hang tight, then tap again.',
+        detail: 'Preparing stream… hang tight, then tap again.',
       });
       return false;
     }
@@ -385,7 +385,16 @@ export class TheaterPlayer {
       this._hadMediaError ||
       (this._lastPlayback && this.mediaRevision !== (this._lastPlayback.mediaRevision ?? 0));
     if (needsReload && this._lastPlayback) {
-      const pb = { ...this._lastPlayback, converting: false };
+      const last = this._lastPlayback;
+      // Convert failed or still not web-playable — never force-reattach progressive HEVC.
+      if (last.convertFailed || last.webPlayable === false) {
+        this.onLocalControl({
+          type: 'decode-fail',
+          detail: last.codecTip || 'This movie could not be prepared for playback.',
+        });
+        return false;
+      }
+      const pb = { ...last, converting: false };
       // Force leave same-media guard by clearing revision identity first.
       this.mediaRevision = null;
       this.currentUid = null;
@@ -472,6 +481,18 @@ export class TheaterPlayer {
     this._lastPlayback = playback;
 
     this._converting = Boolean(playback.converting);
+
+    // Hard failure after HLS prepare — keep screen clear, show tip, do not attach progressive.
+    if (playback.convertFailed && !playback.hls && playback.kind !== 'hls') {
+      this._awaitingConversion = false;
+      this._converting = false;
+      this._hardResetMedia();
+      this.onLocalControl({
+        type: 'decode-fail',
+        detail: playback.codecTip || 'This movie could not be prepared for playback.',
+      });
+      return;
+    }
 
     // Show converting tip early (before media is ready).
     if (playback.converting) {

@@ -52,6 +52,7 @@ function emptyPlayback() {
     videoCodec: null,
     audioCodec: null,
     converting: false, // server is re-encoding to H.264 for Discord
+    convertFailed: false, // HLS prepare failed — do not re-attach progressive
     // Bumped after temp-file remux/probe so Activity players reload the stream.
     mediaRevision: 0,
   };
@@ -306,6 +307,7 @@ export function setPlaybackMeta(channelId, meta = {}) {
   if ('videoCodec' in meta) room.playback.videoCodec = meta.videoCodec || null;
   if ('audioCodec' in meta) room.playback.audioCodec = meta.audioCodec || null;
   if (meta.converting != null) room.playback.converting = Boolean(meta.converting);
+  if (meta.convertFailed != null) room.playback.convertFailed = Boolean(meta.convertFailed);
   if (meta.bumpRevision || meta.mediaRevision != null) {
     room.playback.mediaRevision =
       meta.mediaRevision != null
@@ -326,6 +328,7 @@ export function setPlaybackSource(channelId, playback = {}) {
   if (playback.webPlayable != null) room.playback.webPlayable = Boolean(playback.webPlayable);
   if ('codecTip' in playback) room.playback.codecTip = playback.codecTip || null;
   room.playback.converting = false;
+  room.playback.convertFailed = false;
   room.playback.mediaRevision = (room.playback.mediaRevision || 0) + 1;
   broadcast(room, { event: { type: 'media-ready' } });
 }
@@ -342,6 +345,47 @@ export function startClanMovie(channelId, { hostId, guildId, video, playback }) 
   codesToChannel.set(room.roomCode, channelId);
   room.codeLocked = false;
   room.snackBreak = false;
+
+  // Decide MovieBox/large/non-web hold *before* the first broadcast so clients
+  // never briefly attach a black HEVC progressive URL.
+  let converting = Boolean(playback.converting);
+  let webPlayable = playback.webPlayable != null ? Boolean(playback.webPlayable) : true;
+  let codecTip = playback.codecTip || null;
+  let heuristicNeeds = false;
+  // Library progressive files (have `video.file` from store): hold until probe
+  // confirms H.264/AAC (or convert). Temp uploads omit `file` and already set
+  // converting/webPlayable correctly in temp.create() — do not re-hold them.
+  const libraryProgressive =
+    playback.kind !== 'hls' && Boolean(video?.file) && Boolean(video?.uid) && !playback.hls;
+  try {
+    const name = video?.name || '';
+    const size = Number(video?.size) || 0;
+    const file = video?.file || '';
+    const ext = file.includes('.') ? '.' + file.split('.').pop().toLowerCase() : '';
+    const NAME_HINT =
+      /moviebox|hevc|h\.?265|x265|10[\s._-]?bit|hdr10|dolby[\s._-]?vision|bluray|blu[\s._-]?ray|remux|web[\s._-]?dl|webrip|hdtv|\beac3\b|\bac3\b|\bdts\b|\batmos\b/i;
+    heuristicNeeds =
+      libraryProgressive &&
+      (NAME_HINT.test(name) ||
+        size >= 700 * 1024 * 1024 ||
+        ['.mkv', '.avi', '.wmv', '.flv'].includes(ext) ||
+        webPlayable === false);
+    if (heuristicNeeds) {
+      converting = true;
+      webPlayable = false;
+      codecTip =
+        codecTip ||
+        'Preparing a Discord-safe stream… playback starts after the first segments.';
+    } else if (libraryProgressive && !converting) {
+      // Clean-named .mp4 can still be silent HEVC — hold until async probe.
+      converting = true;
+      webPlayable = false;
+      codecTip = codecTip || 'Checking stream…';
+    }
+  } catch {
+    /* ignore */
+  }
+
   room.playback = {
     ...emptyPlayback(),
     videoUid: video.uid,
@@ -354,43 +398,67 @@ export function startClanMovie(channelId, { hostId, guildId, video, playback }) 
     positionAtUpdate: 0,
     updatedAt: Date.now(),
     locked: true,
-    // Conversion-first: library movies hold progressive until live HLS is playable.
-    // Temp sessions already set converting via temp.js.
-    webPlayable: playback.webPlayable != null ? Boolean(playback.webPlayable) : true,
-    codecTip: playback.codecTip || null,
-    converting: Boolean(playback.converting),
+    webPlayable,
+    codecTip,
+    converting,
+    convertFailed: false,
     videoCodec: playback.videoCodec || null,
     audioCodec: playback.audioCodec || null,
   };
 
-  // Library convert only when the file looks like MovieBox/large/non-web.
-  // Safe progressive library titles keep immediate playback (no forced HLS).
-  queueMicrotask(() => {
-    Promise.all([
-      import('../media/store.js'),
-      import('../media/suspect.js'),
-      import('../media/party-convert.js'),
-    ])
-      .then(([{ filePath, find }, { looksLikeNeedsConvert }, { attachLibraryPartyConversion }]) => {
-        const fp = filePath?.(video.uid);
-        if (!fp || playback.kind === 'hls') return null;
-        const meta = find?.(video.uid);
-        const name = meta?.name || video.name || '';
-        const size = meta?.size || 0;
-        const ext = (meta?.file && String(meta.file).includes('.'))
-          ? '.' + String(meta.file).split('.').pop().toLowerCase()
-          : '';
-        const needs = looksLikeNeedsConvert(name, size) || ['.mkv', '.avi', '.wmv', '.flv'].includes(ext);
-        if (!needs) return null;
-        room.playback.converting = true;
-        room.playback.webPlayable = false;
-        room.playback.codecTip =
-          'Preparing a Discord-safe stream… playback starts after the first segments.';
-        broadcast(room);
-        return attachLibraryPartyConversion(channelId, video.uid, fp);
-      })
-      .catch(() => {});
-  });
+  // Probe / convert library files after first hold broadcast.
+  if (libraryProgressive) {
+    queueMicrotask(() => {
+      Promise.all([
+        import('../media/store.js'),
+        import('../media/suspect.js'),
+        import('../media/party-convert.js'),
+        import('../media/probe.js'),
+      ])
+        .then(async ([{ filePath, find }, { looksLikeNeedsConvert }, { attachLibraryPartyConversion }, { probeFile }]) => {
+          const fp = filePath?.(video.uid);
+          if (!fp) return null;
+          const meta = find?.(video.uid);
+          const name = meta?.name || video.name || '';
+          const size = Number(meta?.size || video.size) || 0;
+          const ext =
+            meta?.file && String(meta.file).includes('.')
+              ? '.' + String(meta.file).split('.').pop().toLowerCase()
+              : '';
+          let needs =
+            heuristicNeeds ||
+            looksLikeNeedsConvert(name, size) ||
+            ['.mkv', '.avi', '.wmv', '.flv'].includes(ext) ||
+            meta?.webPlayable === false;
+
+          if (!needs) {
+            const info = await probeFile(fp, { failClosed: true });
+            if (!info?.ok || !info.webPlayable || info.oddSize) needs = true;
+            else {
+              // Safe progressive — unlock play without HLS.
+              room.playback.converting = false;
+              room.playback.webPlayable = true;
+              room.playback.convertFailed = false;
+              room.playback.codecTip = null;
+              room.playback.videoCodec = info.videoCodec || null;
+              room.playback.audioCodec = info.audioCodec || null;
+              room.playback.mediaRevision = (room.playback.mediaRevision || 0) + 1;
+              broadcast(room);
+              return null;
+            }
+          }
+
+          room.playback.converting = true;
+          room.playback.webPlayable = false;
+          room.playback.convertFailed = false;
+          room.playback.codecTip =
+            'Preparing a Discord-safe stream… playback starts after the first segments.';
+          broadcast(room);
+          return attachLibraryPartyConversion(channelId, video.uid, fp);
+        })
+        .catch(() => {});
+    });
+  }
 
   // Host is already "in the theater"; everyone else stays in the foyer until Enter.
   for (const p of room.participants.values()) {
