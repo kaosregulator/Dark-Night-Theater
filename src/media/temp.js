@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events';
 import { config } from '../config.js';
 import { MIME, NON_WEB } from './store.js';
 import { signMediaToken } from './token.js';
-import { looksLikeNeedsConvert } from './suspect.js';
+import { looksLikeNeedsConvert, suspectReason, LARGE_HOLD_BYTES } from './suspect.js';
 import { enqueueLiveHls, cleanupConversion, PRIORITY } from './conversion-manager.js';
 import { bus as sessionBus, setFeedStatus } from '../services/sessions.js';
 import { log } from '../logger.js';
@@ -60,10 +60,14 @@ export function create({ channelId, name, size, addedBy }) {
   const displayName =
     (name ? path.basename(String(name), path.extname(String(name))) : 'Movie').replace(/[._]+/g, ' ').trim() ||
     'Movie';
-  // Conversion-first: every upload enters the live-HLS pipeline.
-  // Filename / size / codec never gate whether we convert.
+  // Safe progressive files (e.g. H.264 episode rips) play while uploading.
+  // MovieBox / large / non-web: hold progressive until live HLS is ready —
+  // but we always *attempt* conversion (never refuse before trying).
   const suspect = looksLikeNeedsConvert(String(name || displayName), declaredSize) || NON_WEB.has(ext);
-  const tip = 'Preparing a Discord-safe stream… playback starts after the first segments.';
+  const tip = suspect
+    ? suspectReason(String(name || displayName), declaredSize) ||
+      'Preparing a Discord-safe stream… playback starts after the first segments.'
+    : null;
   const session = {
     id,
     channelId: channelId || null,
@@ -76,10 +80,10 @@ export function create({ channelId, name, size, addedBy }) {
     connected: false, // is a host upload actively feeding right now?
     everConnected: false,
     feedStatus: 'streaming',
-    webPlayable: false,
-    suspectConvert: suspect, // diagnostic only — never blocks conversion
-    converting: true,
-    conversionState: 'queued',
+    webPlayable: suspect ? false : !NON_WEB.has(ext),
+    suspectConvert: suspect,
+    converting: Boolean(suspect),
+    conversionState: suspect ? 'queued' : null,
     codecTip: tip,
     kind: ext === '.m3u8' ? 'hls' : 'file',
     createdAt: now(),
@@ -89,9 +93,13 @@ export function create({ channelId, name, size, addedBy }) {
   session.emitter.setMaxListeners(0);
   byId.set(id, session);
   if (channelId) byChannel.set(channelId, id);
-  log.info(
-    `temp ${id}: conversion-first queue (hint=${suspect} · ${(declaredSize / 1048576).toFixed(0)} MB)`
-  );
+  if (suspect) {
+    log.info(
+      `temp ${id}: hold progressive until live HLS (MovieBox/large/non-web · ${(declaredSize / 1048576).toFixed(0)} MB)`
+    );
+  } else {
+    log.info(`temp ${id}: progressive play-while-upload (${(declaredSize / 1048576).toFixed(0)} MB)`);
+  }
   return session;
 }
 
@@ -160,21 +168,68 @@ async function prepareForWeb(session) {
   if (session.prepareStarted) return;
   session.prepareStarted = true;
 
-  // Probe is diagnostic only — it never decides whether we convert.
-  let info = null;
-  try {
-    const { probeFile, logProbe } = await import('./probe.js');
-    info = await probeFile(session.file, { failClosed: false });
-    logProbe(session.id, info);
+  const { probeFile, faststartRemux, codecTip, logProbe } = await import('./probe.js');
+
+  // Probe first. Suspect uploads fail-closed so we convert instead of serving HEVC progressive.
+  const failClosed = Boolean(session.suspectConvert);
+  let info = await probeFile(session.file, { failClosed });
+  logProbe(session.id, info);
+  session.probe = info;
+
+  if (!info?.ok && failClosed) {
+    info = {
+      ok: true,
+      webPlayable: false,
+      videoCodec: info?.videoCodec || null,
+      audioCodec: info?.audioCodec || null,
+      oddSize: false,
+      reason: info?.reason || 'Probe failed — converting to be safe',
+    };
     session.probe = info;
-  } catch (err) {
-    log.warn(`temp ${session.id}: probe error — ${err.message}`);
   }
 
-  session.converting = true;
-  session.conversionState = 'converting';
+  if (info?.ok) {
+    session.webPlayable = Boolean(info.webPlayable);
+    // Soft tip only while converting — never HandBrake/manual advice.
+    session.codecTip = info.webPlayable && !info.oddSize ? null : codecTip(info);
+  }
+
+  // Convert when probe says so, OR when we already held a suspect upload.
+  // Safe H.264 episodes skip HLS and keep progressive playback.
+  const needsConvert = Boolean(
+    (info?.ok && (!info.webPlayable || info.oddSize)) || (failClosed && !info?.webPlayable)
+  );
+  session.converting = needsConvert;
+  session.conversionState = needsConvert ? 'converting' : null;
+
+  if (!needsConvert) {
+    const remux = await faststartRemux(session.file, {
+      timeoutMs: 120000,
+      maxBytes: LARGE_HOLD_BYTES,
+    });
+    if (remux.ok) log.info(`temp ${session.id}: faststart remux ok`);
+    else if (remux.reason) log.warn(`temp ${session.id}: faststart skipped — ${remux.reason}`);
+
+    session.converting = false;
+    session.webPlayable = true;
+    session.codecTip = null;
+    if (session.channelId) {
+      const { setPlaybackMeta } = await import('../services/sessions.js');
+      setPlaybackMeta(session.channelId, {
+        webPlayable: true,
+        codecTip: null,
+        videoCodec: info?.videoCodec || null,
+        audioCodec: info?.audioCodec || null,
+        converting: false,
+        bumpRevision: true,
+      });
+    }
+    return;
+  }
+
   session.webPlayable = false;
-  session.codecTip = 'Preparing a Discord-safe stream… playback starts after the first segments.';
+  session.codecTip =
+    'Preparing a Discord-safe stream… playback starts after the first segments.';
 
   if (session.channelId) {
     const { setPlaybackMeta } = await import('../services/sessions.js');
@@ -236,11 +291,11 @@ async function prepareForWeb(session) {
           session.hlsPlaylist = playlist || path.join(hlsDir, 'index.m3u8');
           session.webPlayable = true;
           session.codecTip = null;
-          session.converting = false; // playable now; encode may still run
+          session.converting = false;
           session.conversionState = 'playable';
           session.kind = 'hls';
           log.info(
-            `temp ${session.id}: playable (${segments || '?'} segments) — encode continues in background`
+            `temp ${session.id}: HLS playable (${segments || '?'} segments) — encode continues in background`
           );
           if (session.channelId) {
             import('../services/sessions.js')
@@ -257,7 +312,6 @@ async function prepareForWeb(session) {
               })
               .catch((e) => log.warn('temp media-ready broadcast:', e.message));
           }
-          // Unlock viewers as soon as first segments exist.
           done();
         },
         onComplete: () => {
@@ -271,7 +325,6 @@ async function prepareForWeb(session) {
         },
       });
 
-      // Wire stop handle so scrub can cancel the worker/ffmpeg.
       session.hlsStop = () => cleanupConversion(session.id);
       const pollChild = setInterval(() => {
         if (job.child) {

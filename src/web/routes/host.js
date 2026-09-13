@@ -92,9 +92,13 @@ host.put('/api/host/upload', (req, res) => {
     });
     log.info(`Host uploaded "${video.name}" (${(bytes / 1048576).toFixed(0)} MB)`);
     import('../../media/party-convert.js')
-      .then(({ enqueueLibraryConvert }) => {
+      .then(async ({ enqueueLibraryConvert }) => {
         const fp = store.filePath(video.uid);
-        if (fp) enqueueLibraryConvert(video.uid, fp);
+        if (!fp) return;
+        const { looksLikeNeedsConvert } = await import('../../media/suspect.js');
+        if (looksLikeNeedsConvert(video.name, video.size) || video.webPlayable === false) {
+          enqueueLibraryConvert(video.uid, fp);
+        }
       })
       .catch(() => {});
     res.json({ ok: true, video });
@@ -334,7 +338,7 @@ const keyEl=$('#key');
 if(S){ // session mode: opened from /watch — no key, auto-start the party
   $('#keywrap').style.display='none';
   $('#listwrap').style.display='none';
-  $('#mode').innerHTML='Pick a movie from this device — the party <b>starts right away</b> and the file uploads in the background. Your file stays on your device; the server copy is temporary and deleted when the party ends. <b>Keep this tab open</b> while watching.<br><br><b>Conversion-first:</b> every movie automatically enters the live HLS pipeline (H.264 + AAC). Playback unlocks as soon as the first segments exist — source codec/filename/size never block the attempt.';
+  $('#mode').innerHTML='Pick a movie from this device — the party <b>starts right away</b> and normal H.264/AAC files play while they upload. Big MovieBox / HEVC files are converted automatically to a Discord-safe stream (playback unlocks after the first segments). <b>Keep this tab open</b> while watching.';
 } else {
   keyEl.value=localStorage.getItem('dnkey')||'';
   keyEl.onchange=()=>{localStorage.setItem('dnkey',keyEl.value);refresh();};
@@ -381,8 +385,8 @@ async function hostSession(f){
   SID=meta.sessionId; FILE=f; retries=0;
   hostMsg='🎉 <b>Party started</b> — “'+meta.name+'”! Prefer launching from Discord: voice channel → <b>Activities</b> → DarkNight (same window). <b>Keep this tab open</b> while it streams.';
   if(meta.activityUrl) hostMsg+='<br><a class="open" href="'+meta.activityUrl+'" target="_blank" rel="noopener">▶ Open Theater invite</a> <small>(invite links may open another Discord window — that’s Discord, not a bug)</small>';
-  if(meta.converting){
-    hostMsg+='<br><small>⚙️ Preparing a Discord-safe stream… playback unlocks after the first segments (conversion continues in the background).</small>';
+  if(meta.converting || meta.suspectConvert){
+    hostMsg+='<br><small>⚙️ Large/MovieBox file — preparing a Discord-safe stream… playback unlocks after the first segments (upload can finish first).</small>';
     if(meta.codecTip) hostMsg+='<br><small>'+esc(meta.codecTip)+'</small>';
   } else if(meta.webPlayable===false && meta.codecTip){
     hostMsg+='<br><small>'+esc(meta.codecTip)+'</small>';

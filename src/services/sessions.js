@@ -363,22 +363,31 @@ export function startClanMovie(channelId, { hostId, guildId, video, playback }) 
     audioCodec: playback.audioCodec || null,
   };
 
-  // Kick library conversions without blocking room start.
-  // store.filePath(uid) is null for temp /tmedia sessions (handled in temp.js).
+  // Library convert only when the file looks like MovieBox/large/non-web.
+  // Safe progressive library titles keep immediate playback (no forced HLS).
   queueMicrotask(() => {
-    import('../media/store.js')
-      .then(({ filePath }) => {
+    Promise.all([
+      import('../media/store.js'),
+      import('../media/suspect.js'),
+      import('../media/party-convert.js'),
+    ])
+      .then(([{ filePath, find }, { looksLikeNeedsConvert }, { attachLibraryPartyConversion }]) => {
         const fp = filePath?.(video.uid);
         if (!fp || playback.kind === 'hls') return null;
+        const meta = find?.(video.uid);
+        const name = meta?.name || video.name || '';
+        const size = meta?.size || 0;
+        const ext = (meta?.file && String(meta.file).includes('.'))
+          ? '.' + String(meta.file).split('.').pop().toLowerCase()
+          : '';
+        const needs = looksLikeNeedsConvert(name, size) || ['.mkv', '.avi', '.wmv', '.flv'].includes(ext);
+        if (!needs) return null;
         room.playback.converting = true;
         room.playback.webPlayable = false;
         room.playback.codecTip =
-          room.playback.codecTip ||
           'Preparing a Discord-safe stream… playback starts after the first segments.';
         broadcast(room);
-        return import('../media/party-convert.js').then(({ attachLibraryPartyConversion }) =>
-          attachLibraryPartyConversion(channelId, video.uid, fp)
-        );
+        return attachLibraryPartyConversion(channelId, video.uid, fp);
       })
       .catch(() => {});
   });
