@@ -39,68 +39,83 @@ IGNORE      local pHash (dHash + blockHash)
 Without `JINA_API_KEY`, only the local pHash stage runs (exact / near-exact
 duplicates still match).
 
-## Setup
+## Fast setup
 
-1. **Required for image watching:** enable **Message Content Intent** in the
-   Discord Developer Portal → your app → **Bot** → **Privileged Gateway Intents**
-   → turn ON **Message Content Intent** → Save. Without this, Discord rejects
-   login with `Used disallowed intents`. The bot will fall back to theater-only
-   mode; `/image-target` watching stays off until the intent is enabled.
-2. **Postgres (required in production)** — you already have a Railway Postgres
-   service. Share its URL into the bot service:
-   - Railway → **Dark-Night-Theater** → **Variables** → **New Variable**
-   - Name: `DATABASE_URL`
-   - Value: `${{Postgres.DATABASE_URL}}`  (variable reference)
-   - Redeploy the bot. On boot it auto-creates tables:
-     `image_target_guild_settings`, `image_targets`,
-     `image_target_detections`, `image_target_strikes`.
-3. Optional: set `JINA_API_KEY` (free key: https://jina.ai/?sui=apikey).
-4. Re-register slash commands and restart:
+1. **Message Content Intent** (required for watching): Discord Developer Portal →
+   your app → **Bot** → Privileged Gateway Intents → turn ON **Message Content
+   Intent** → Save. Without this, Discord rejects login with `Used disallowed
+   intents`. The bot falls back to theater-only mode; image watching stays off
+   until the intent is enabled.
+2. **Postgres** — Railway → bot service → Variables →
+   `DATABASE_URL` = `${{Postgres.DATABASE_URL}}` → redeploy. Tables are created
+   on boot.
+3. Optional: `JINA_API_KEY` (https://jina.ai/?sui=apikey).
+4. Re-register slash commands after deploy:
 
 ```bash
 npm run register
-npm start
 ```
 
-Bot needs permissions in watched channels: **View Channel**, **Read Message
-History**, **Manage Messages** (to delete), plus Kick/Ban/Moderate Members if
-you enable those actions.
+Bot needs in watched channels: **View Channel**, **Read Message History**,
+**Manage Messages** (delete), **Send Messages** (warn). Kick/Ban/Moderate
+Members only if you pick those actions. The hub only shows permission warnings
+when a watched channel is actually missing one of these.
 
-> JSON file storage (`data/image-targets.json`) has been removed. Production
-> uses Postgres only.
-
-## Commands
+## Commands (hub)
 
 `/image-target` (alias `/imagetrack`) — Manage Guild required.
 
-| Subcommand | Purpose |
+Opens an ephemeral **Image Target Hub** (no slash subcommand maze):
+
+| Control | What it does |
 |---|---|
-| `add` | Upload image/GIF/video → save as target |
-| `list` | List targets for this server |
-| `remove` | Remove by name or ID |
-| `enable` / `disable` | Toggle a target |
-| `test` | Dry-run match (no delete / no punish) |
-| `channel` | Add / remove / list watched channels |
-| `threshold` | Set cosine similarity threshold |
-| `action` | `log` · `delete_log` (default) · `delete_warn` · `delete_timeout` · `delete_kick` · `delete_ban` |
-| `log-channel` | Where detection embeds are posted |
-| `escalation` | Optional strike ladder: warn → timeout → kick → ban |
-| `status` | Overview for this server |
+| **Add image** | Discord file picker modal — attach image/GIF/video |
+| **Watch this channel** | Arm live matching in the channel you ran the command in |
+| **Unwatch this channel** | Stop watching this channel |
+| **Test image** | Dry-run match (no delete / no punish) |
+| **Set action** | Pick what happens on a match |
+| **Remove target** | Delete a saved target |
+| **Refresh** | Reload status + gallery |
+
+Or attach a file on the slash command itself:
+
+```
+/image-target image:<file> name:Scam banner
+```
+
+That saves the target, **auto-watches the current channel**, prefers
+**Delete + warn**, and shows the hub gallery with a preview thumbnail.
+
+### Match actions
+
+`log` · `delete_log` · `delete_warn` (**default**) · `delete_timeout` ·
+`delete_kick` · `delete_ban`
+
+Default is **delete + public warn** so matches are visible. Older guilds still
+on silent `delete_log` are upgraded when you open the hub or add a target.
 
 Targets are **guild-scoped** — Guild A never affects Guild B.
 
 ## Typical flow
 
 ```
-Admin:  /image-target add  (+ attach scam.png)  name: Scam Image
-Bot:    ✅ Target Scam Image saved.
+Admin:  /image-target          (in #general)
+Bot:    Hub opens → checklist
 
-Admin:  /image-target channel action:add channel:#image-check
-Bot:    ✅ Now watching #image-check
+Admin:  Add image  (or attach on the slash command)
+Bot:    Target saved · gallery shows preview · channel auto-watched
 
-User posts the same image (any filename) in #image-check
-Bot:    🚨 Target image detected — 97.4% · deletes message · logs
+User posts the same image in that channel
+Bot:    Deletes message · public warn · logs detection embed
 ```
+
+**Why test worked but live posts did nothing (before this hub):**
+
+- `/test` never required a watched channel; live matching only runs in channels
+  you arm with **Watch this channel** (or auto-watch on add).
+- Old default `delete_log` deleted quietly with no public warn; failed deletes
+  could look like “success.” Default is now `delete_warn`, and failed deletes
+  still warn.
 
 ## Modules
 
@@ -114,18 +129,15 @@ Bot:    🚨 Target image detected — 97.4% · deletes message · logs
 | `store.js` | **Postgres** repository (`DATABASE_URL`) |
 | `migrate.js` | Idempotent schema migration on boot |
 | `actions.js` | Log / delete / warn / timeout / kick / ban |
-| `commands.js` | Slash command handlers |
+| `commands.js` | Slash command → hub |
+| `hub.js` | Interactive hub (file upload, gallery, arm channel) |
 | `watcher.js` | `messageCreate` / `messageUpdate` listener |
 | `../../db/postgres.js` | Shared `pg` pool (Railway TLS) |
 
-## Security
-
-- File extensions are not trusted — content is validated with `sharp`.
-- Downloads: size cap (8 MB), timeout, redirect limit, private/link-local SSRF block.
-- No dependence on Discord attachment URLs for matching — only visual content.
-
-## Tests
+## Dev / tests
 
 ```bash
-node --test src/bot/image-target/__tests__/image-target.test.js
+IMAGE_TARGET_MEMORY=1 npm run test:image-target
 ```
+
+In-memory store is for unit tests only. Production uses Postgres.

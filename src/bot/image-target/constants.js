@@ -53,7 +53,7 @@ export const VIDEO_EXT = new Set([
 ]);
 
 /** Default moderation action when a target matches. */
-export const DEFAULT_ACTION = 'delete_log';
+export const DEFAULT_ACTION = 'delete_warn';
 
 export const ACTIONS = [
   'log',

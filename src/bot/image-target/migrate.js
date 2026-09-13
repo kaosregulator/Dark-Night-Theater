@@ -10,7 +10,7 @@ const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS image_target_guild_settings (
   guild_id TEXT PRIMARY KEY,
   channels TEXT[] NOT NULL DEFAULT '{}',
-  action TEXT NOT NULL DEFAULT 'delete_log',
+  action TEXT NOT NULL DEFAULT 'delete_warn',
   threshold DOUBLE PRECISION NOT NULL DEFAULT 0.9,
   escalation_enabled BOOLEAN NOT NULL DEFAULT FALSE,
   escalation TEXT[] NOT NULL DEFAULT ARRAY['delete_warn','delete_timeout','delete_kick','delete_ban'],
@@ -74,11 +74,21 @@ CREATE TABLE IF NOT EXISTS image_target_strikes (
 );
 `;
 
+const ALTER_SQL = `
+ALTER TABLE image_targets
+  ADD COLUMN IF NOT EXISTS preview_jpeg BYTEA,
+  ADD COLUMN IF NOT EXISTS source_url TEXT;
+
+ALTER TABLE image_target_guild_settings
+  ALTER COLUMN action SET DEFAULT 'delete_warn';
+`;
+
 export async function migrateImageTargetSchema() {
   if (!hasDatabaseUrl()) {
     throw new Error('DATABASE_URL missing — cannot migrate image-target schema');
   }
   await query(SCHEMA_SQL);
+  await query(ALTER_SQL);
   log.info('[image-target] Postgres schema ready');
   return true;
 }

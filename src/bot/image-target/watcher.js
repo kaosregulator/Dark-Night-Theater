@@ -120,10 +120,29 @@ async function loadCandidate(candidate) {
 export async function handleImageTargetMessage(message) {
   try {
     if (!message.guild || message.author?.bot) return;
-    if (!(await isChannelWatched(message.guild.id, message.channel.id))) return;
 
     const targets = await listTargets(message.guild.id, { includeDisabled: false });
     if (!targets.length) return;
+
+    // Watch exact channel OR parent channel (so threads inherit the parent watch).
+    const channelId = message.channel.id;
+    const parentId = message.channel.isThread?.()
+      ? message.channel.parentId
+      : message.channel.parentId || null;
+    const watchedHere = await isChannelWatched(message.guild.id, channelId);
+    const watchedParent = parentId
+      ? await isChannelWatched(message.guild.id, parentId)
+      : false;
+    if (!watchedHere && !watchedParent) {
+      // Helpful once-in-a-while log: targets exist but this channel is not armed.
+      if (Math.random() < 0.02) {
+        log.info(
+          `[image-target] skip unwatched channel=${channelId} guild=${message.guild.id} ` +
+            `(have ${targets.length} target(s) — open /image-target hub → Watch this channel)`,
+        );
+      }
+      return;
+    }
 
     if (inflight.has(message.id)) return;
     inflight.add(message.id);

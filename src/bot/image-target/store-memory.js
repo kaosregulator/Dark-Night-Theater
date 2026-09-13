@@ -95,6 +95,8 @@ export async function addTarget(guildId, {
   createdBy,
   threshold = null,
   mediaKind = 'image',
+  previewJpeg = null,
+  sourceUrl = null,
 }) {
   const g = ensure(guildId);
   const targetId = randomUUID();
@@ -113,6 +115,8 @@ export async function addTarget(guildId, {
     createdBy,
     createdAt: new Date().toISOString(),
     enabled: true,
+    previewJpeg,
+    sourceUrl,
   };
   g.targets.set(targetId, target);
   return { ...target };

@@ -75,6 +75,8 @@ function mapTargetRow(row) {
     createdBy: row.created_by,
     createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
     enabled: Boolean(row.enabled),
+    previewJpeg: row.preview_jpeg || null,
+    sourceUrl: row.source_url || null,
   };
 }
 
@@ -182,11 +184,14 @@ export async function addTarget(guildId, {
   createdBy,
   threshold = null,
   mediaKind = 'image',
+  previewJpeg = null,
+  sourceUrl = null,
 }) {
   if (useMemory()) {
     return memory.addTarget(guildId, {
       name, perceptualHash, blockHash, embedding, embeddingModel,
       contentHash, mimeType, createdBy, threshold, mediaKind,
+      previewJpeg, sourceUrl,
     });
   }
 
@@ -198,11 +203,11 @@ export async function addTarget(guildId, {
       `INSERT INTO image_targets (
          target_id, guild_id, name, perceptual_hash, block_hash,
          embedding, embedding_model, content_hash, mime_type, media_kind,
-         similarity_threshold, created_by, enabled
+         similarity_threshold, created_by, enabled, preview_jpeg, source_url
        ) VALUES (
          $1,$2,$3,$4,$5,
          $6::jsonb,$7,$8,$9,$10,
-         $11,$12, TRUE
+         $11,$12, TRUE, $13, $14
        )
        RETURNING *`,
       [
@@ -218,6 +223,8 @@ export async function addTarget(guildId, {
         mediaKind || 'image',
         threshold,
         createdBy,
+        previewJpeg,
+        sourceUrl,
       ],
     );
     return mapTargetRow(res.rows[0]);

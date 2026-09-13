@@ -51,7 +51,14 @@ export function buildDetectionEmbed({
 
 async function safeDelete(message) {
   try {
-    if (message.deletable) await message.delete();
+    if (!message.deletable) {
+      log.warn(
+        `[image-target] cannot delete message ${message.id} in #${message.channel?.id} — ` +
+          'bot needs Manage Messages in this channel',
+      );
+      return false;
+    }
+    await message.delete();
     return true;
   } catch (err) {
     log.warn('[image-target] delete failed:', err.message);
@@ -84,7 +91,7 @@ async function meCan(guild, perm) {
 export async function applyDetectionAction(message, match) {
   const guildId = message.guild.id;
   const cfg = await getGuildConfig(guildId);
-  let action = ACTIONS.includes(cfg.action) ? cfg.action : 'delete_log';
+  let action = ACTIONS.includes(cfg.action) ? cfg.action : 'delete_warn';
 
   let strikes = await getStrikes(guildId, message.author.id);
   if (cfg.escalationEnabled && Array.isArray(cfg.escalation) && cfg.escalation.length) {
@@ -96,8 +103,12 @@ export async function applyDetectionAction(message, match) {
     ? await safeDelete(message)
     : false;
 
-  if (action === 'delete_warn' || action === 'log') {
-    if (action === 'delete_warn') await safeWarn(message, match.target, match.score);
+  // Always public-warn on delete_warn. If delete failed for any delete_* action,
+  // still warn so mods see something happened (silent failures were confusing).
+  if (action === 'delete_warn' || (action.startsWith('delete_') && !deleted)) {
+    await safeWarn(message, match.target, match.score);
+  } else if (action === 'log') {
+    // log-only: no public warn
   }
 
   if (action === 'delete_timeout') {
