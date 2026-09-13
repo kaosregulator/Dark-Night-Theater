@@ -116,13 +116,13 @@ async function renderScene(image, id, opts = {}) {
     };
   });
   const H2 = pageH;
+  // Chroma bbox only. The two-triangle affine warp left a faint diagonal
+  // "slash" seam (mission-passed, Dexter, …); keep original green-screen
+  // cover/stretch into the bbox + keyed FG on top, and skip unused quad work.
   const boxes = [];
-  const quads = [];
   for (const f of frames) {
     const d = f.data;
     let minX = W, minY = H2, maxX = -1, maxY = -1, cnt = 0;
-    let tlS = Infinity, brS = -Infinity, trS = -Infinity, blS = Infinity;
-    let tl = { x: 0, y: 0 }, tr = { x: 0, y: 0 }, br = { x: 0, y: 0 }, bl = { x: 0, y: 0 };
     for (let y = 0; y < H2; y++) for (let x = 0; x < W; x++) {
       const i = (y * W + x) * 4;
       if (!key(d[i], d[i + 1], d[i + 2])) continue;
@@ -131,31 +131,12 @@ async function renderScene(image, id, opts = {}) {
       if (x > maxX) maxX = x;
       if (y < minY) minY = y;
       if (y > maxY) maxY = y;
-      const sum = x + y, diff = x - y;
-      if (sum < tlS) {
-        tlS = sum;
-        tl = { x, y };
-      }
-      if (sum > brS) {
-        brS = sum;
-        br = { x, y };
-      }
-      if (diff > trS) {
-        trS = diff;
-        tr = { x, y };
-      }
-      if (diff < blS) {
-        blS = diff;
-        bl = { x, y };
-      }
     }
     if (cnt < W * H2 * 4e-3) {
       boxes.push(null);
-      quads.push(null);
       continue;
     }
     boxes.push({ x: minX, y: minY, w: maxX - minX, h: maxY - minY, absent: false });
-    quads.push({ tl, tr, br, bl, absent: false });
   }
   const smooth = [];
   let last = null;
@@ -175,33 +156,6 @@ async function renderScene(image, id, opts = {}) {
     };
     smooth.push({ ...last });
   }
-  const smoothQuads = [];
-  let lastQ = null;
-  let fillSum = 0, fillCnt = 0;
-  for (let i = 0; i < quads.length; i++) {
-    const q = quads[i];
-    if (!q) {
-      smoothQuads.push(lastQ ? { ...lastQ, absent: true } : null);
-      continue;
-    }
-    if (!lastQ) lastQ = q;
-    const a = 0.5;
-    lastQ = {
-      tl: lerpPt(lastQ.tl, q.tl, a),
-      tr: lerpPt(lastQ.tr, q.tr, a),
-      br: lerpPt(lastQ.br, q.br, a),
-      bl: lerpPt(lastQ.bl, q.bl, a),
-      absent: false
-    };
-    smoothQuads.push({ ...lastQ });
-    const box = boxes[i];
-    if (box && box.w > 2 && box.h > 2) {
-      fillSum += quadArea(q) / (box.w * box.h);
-      fillCnt++;
-    }
-  }
-  const rectangular = fillCnt > 0 && fillSum / fillCnt >= 0.72;
-  const useWarp = rectangular && cfg.effect === "none" && cfg.fit !== "stretch";
   let explodeStart = null;
   if (cfg.effect === "explode") {
     for (let k = 0; k < frames.length; k++) {
@@ -242,10 +196,7 @@ async function renderScene(image, id, opts = {}) {
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, W, H2);
     const box = smooth[f];
-    const quad = smoothQuads[f];
-    if (useWarp && quad && !quad.absent) {
-      warpTargetToQuad(ctx, target, quad);
-    } else if (box && !box.absent) {
+    if (box && !box.absent) {
       drawTarget(mod, ctx, target, box, cfg, f, frames.length, explodeStart, revealAt);
     }
     const fgId = fgctx.createImageData(W, H2);
@@ -258,64 +209,6 @@ async function renderScene(image, id, opts = {}) {
   }
   encoder.finish();
   return encoder.out.getData();
-}
-function lerpPt(a, b, t) {
-  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
-}
-function quadArea(q) {
-  const p = [q.tl, q.tr, q.br, q.bl];
-  let s = 0;
-  for (let i = 0; i < 4; i++) {
-    const a = p[i], b = p[(i + 1) % 4];
-    s += a.x * b.y - b.x * a.y;
-  }
-  return Math.abs(s) / 2;
-}
-function affineFromTri(s, d) {
-  const [s0, s1, s2] = s;
-  const [d0, d1, d2] = d;
-  const det = (s1.x - s0.x) * (s2.y - s0.y) - (s2.x - s0.x) * (s1.y - s0.y);
-  if (Math.abs(det) < 1e-6) return [1, 0, 0, 1, 0, 0];
-  const a = ((d1.x - d0.x) * (s2.y - s0.y) - (d2.x - d0.x) * (s1.y - s0.y)) / det;
-  const c = ((s1.x - s0.x) * (d2.x - d0.x) - (s2.x - s0.x) * (d1.x - d0.x)) / det;
-  const b = ((d1.y - d0.y) * (s2.y - s0.y) - (d2.y - d0.y) * (s1.y - s0.y)) / det;
-  const dd = ((s1.x - s0.x) * (d2.y - d0.y) - (s2.x - s0.x) * (d1.y - d0.y)) / det;
-  const e = d0.x - a * s0.x - c * s0.y;
-  const f = d0.y - b * s0.x - dd * s0.y;
-  return [a, b, c, dd, e, f];
-}
-function warpTargetToQuad(ctx, target, q) {
-  const topW = Math.hypot(q.tr.x - q.tl.x, q.tr.y - q.tl.y);
-  const botW = Math.hypot(q.br.x - q.bl.x, q.br.y - q.bl.y);
-  const leftH = Math.hypot(q.bl.x - q.tl.x, q.bl.y - q.tl.y);
-  const rightH = Math.hypot(q.br.x - q.tr.x, q.br.y - q.tr.y);
-  const quadAspect = (topW + botW) / 2 / Math.max(1, (leftH + rightH) / 2);
-  const iw = target.width, ih = target.height;
-  let sw = iw, sh = ih;
-  if (iw / ih > quadAspect) sw = ih * quadAspect;
-  else sh = iw / quadAspect;
-  const sx = (iw - sw) / 2, sy = (ih - sh) / 2;
-  const s = [
-    { x: sx, y: sy },
-    { x: sx + sw, y: sy },
-    { x: sx + sw, y: sy + sh },
-    { x: sx, y: sy + sh }
-  ];
-  const d = [q.tl, q.tr, q.br, q.bl];
-  for (const [i, j, k] of [[0, 1, 2], [0, 2, 3]]) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(d[i].x, d[i].y);
-    ctx.lineTo(d[j].x, d[j].y);
-    ctx.lineTo(d[k].x, d[k].y);
-    ctx.closePath();
-    ctx.clip();
-    const [a, b, c, dd, e, ff] = affineFromTri([s[i], s[j], s[k]], [d[i], d[j], d[k]]);
-    ctx.setTransform(a, b, c, dd, e, ff);
-    ctx.drawImage(target, 0, 0);
-    ctx.resetTransform();
-    ctx.restore();
-  }
 }
 function drawTarget(mod, ctx, target, box, cfg, idx, total, explodeStart, revealAt) {
   let tw, th, tx, ty;
