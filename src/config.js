@@ -47,6 +47,12 @@ export const config = {
     adminUserIds: list('ADMIN_USER_IDS'),
     sessionSecret: str('SESSION_SECRET', 'change-me'),
   },
+  // Optional — enables stage-2 visual matching for /image-target.
+  // Free key: https://jina.ai/?sui=apikey
+  // Without it, the watcher still works via local perceptual hashes.
+  jina: {
+    apiKey: str('JINA_API_KEY'),
+  },
 };
 
 // Which subsystems are ready. The media host needs no secrets, so it's always on.

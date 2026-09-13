@@ -15,7 +15,8 @@
     "postinstall": "node scripts/postinstall.js",
     "test:moviebox": "node scripts/test-large-moviebox.mjs",
     "emoji:fetch": "node scripts/fetch-emoji-offline.mjs",
-    "test:conversion": "node scripts/test-conversion-first.mjs"
+    "test:conversion": "node scripts/test-conversion-first.mjs",
+    "test:image-target": "node --test src/bot/image-target/__tests__/image-target.test.js"
   },
   "dependencies": {
     "@discord/embedded-app-sdk": "^1.9.0",

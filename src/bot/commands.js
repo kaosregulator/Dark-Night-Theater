@@ -2,6 +2,10 @@ import {
   SlashCommandBuilder,
   PermissionFlagsBits,
 } from 'discord.js';
+import {
+  imageTargetCommand,
+  imageTrackCommand,
+} from './image-target/index.js';
 
 // Slash command definitions (data only). Registered by register-commands.js and
 // handled in handlers/. Kept in one place so both share a single source.
@@ -46,4 +50,9 @@ export const commands = [
     .setName('emoji')
     .setDescription('Make an animated emoji from any avatar, image, or server icon')
     .setDMPermission(false),
-].map((c) => c.toJSON());
+
+  // Image-target watcher (pHash + optional Jina CLIP). Builders already have
+  // ManageGuild permission + subcommands.
+  imageTargetCommand,
+  imageTrackCommand,
+].map((c) => (typeof c.toJSON === 'function' ? c.toJSON() : c));

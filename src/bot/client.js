@@ -4,6 +4,7 @@ import { log } from '../logger.js';
 import { routeInteraction } from './handlers/index.js';
 import { wireControlPanelRefresh } from './handlers/theater.js';
 import { setDiscordClient } from './clientRef.js';
+import { attachImageTargetWatcher } from './image-target/index.js';
 
 // Boots the Discord bot. Returns the client (or null if not configured, so the
 // web server can still run and show setup help).
@@ -17,6 +18,10 @@ export async function startBot() {
     intents: [
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildVoiceStates, // needed to see who is in voice channels
+      // Image-target watcher: see messages + attachment URLs in watched channels.
+      // MessageContent is privileged — enable it in the Discord Developer Portal.
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
     ],
   });
 
@@ -28,6 +33,9 @@ export async function startBot() {
 
   client.on(Events.InteractionCreate, routeInteraction);
   client.on(Events.Error, (e) => log.error('discord client error:', e.message));
+
+  // Lightweight target-image watcher (pHash → optional Jina CLIP).
+  attachImageTargetWatcher(client);
 
   setDiscordClient(client); // let the web layer post panels / create invites
   await client.login(config.discord.botToken);

@@ -123,6 +123,10 @@ Software provided **"AS IS", without warranty**. Full terms:
 | `/theater` | Everyone | Open the Theater in your voice channel + post live controls. |
 | `/library sync` \| `status` | Manage Server / staff | Re-scan the media folder; show where to add movies. |
 | `/theater-settings` | Manage Server | Per-server configuration. |
+| `/image-target` · `/imagetrack` | Manage Server | Watch for target images (pHash + optional Jina CLIP). |
+
+Image-target details (two-stage matching, actions, Jina setup):
+**[docs/IMAGE_TARGET.md](./docs/IMAGE_TARGET.md)**.
 
 ---
 
