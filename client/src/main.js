@@ -103,7 +103,7 @@ async function boot() {
         const canControl = isHost || !snap?.playback?.locked || !snap?.hostId;
         if (canControl && snap?.playback?.videoUid) {
           if (!snap.playback.playing) {
-            player.video.muted = false;
+            player.markUnmuted();
             player.video.play().catch(() => {});
           } else if (action === 'toggle') {
             player.video.pause();
@@ -127,6 +127,40 @@ async function boot() {
     menuOpen = false;
     ui.hideMainMenu();
     await api.startMovie(dc.channelId, uid, dc.guildId).catch((e) => ui.toast('⚠️ ' + e.message));
+  });
+  ui.on('marquee-add', async ({ uid }) => {
+    await api.addToMarquee(dc.channelId, uid).catch((e) => ui.toast('⚠️ ' + e.message));
+    ui.toast('🎟️ Added to marquee');
+    ui.toggleLobby(true);
+  });
+  ui.on('marquee-vote', async ({ uid }) => {
+    await api.voteMarquee(dc.channelId, uid).catch((e) => ui.toast('⚠️ ' + e.message));
+  });
+  ui.on('marquee-remove', async ({ uid }) => {
+    await api.removeFromMarquee(dc.channelId, uid).catch((e) => ui.toast('⚠️ ' + e.message));
+  });
+  ui.on('marquee-start', async ({ uid }) => {
+    mode = 'clan';
+    menuOpen = false;
+    ui.hideMainMenu();
+    await api.startMarquee(dc.channelId, uid, dc.guildId).catch((e) => ui.toast('⚠️ ' + e.message));
+  });
+  ui.on('marquee-booth', async ({ uid }) => {
+    try {
+      const result = await api.openBooth(dc.channelId, uid, dc.guildId);
+      ui.toast(`🚪 New screen open · code ${result.roomCode || '????'}`);
+      if (result.theaterId) {
+        // Host who opened the booth can hop into it.
+        sync.switchTheater(result.theaterId);
+      }
+    } catch (e) {
+      ui.toast('⚠️ ' + e.message);
+    }
+  });
+  ui.on('join-booth', ({ theaterId }) => {
+    if (!theaterId) return;
+    ui.toast('🚪 Entering that theater screen…');
+    sync.switchTheater(theaterId);
   });
   ui.on('pick-private', async ({ uid }) => {
     mode = 'private';
@@ -163,7 +197,7 @@ async function boot() {
       ui.showTapToPlay(() => tryStartPlayback());
     } else if (e.type === 'needs-unmute') {
       ui.showTapToUnmute(() => {
-        player.video.muted = false;
+        player.markUnmuted();
       });
     } else if (e.type === 'decode-fail') {
       // Never treat codec errors as fatal while the server is still converting.
@@ -240,6 +274,16 @@ async function boot() {
     if (ev?.type === 'movie') {
       ui.toast(`🎬 Now playing · code ${ev.roomCode || sync.snapshot?.roomCode || '????'}`);
       if (amInside(sync.snapshot)) enterWatching(ui, player, sync);
+    }
+    if (ev?.type === 'booth') {
+      ui.toast(
+        `🚪 ${ev.label || 'New screen'} ready${ev.roomCode ? ' · code ' + ev.roomCode : ''}${
+          ev.video?.name ? ' · ' + ev.video.name : ''
+        }`
+      );
+    }
+    if (ev?.type === 'marquee') {
+      ui.renderMarquee?.();
     }
     if (ev?.type === 'media-ready') {
       const pb = sync.snapshot?.playback;

@@ -69,6 +69,8 @@ export class TheaterUI {
           </div>
           <div class="topbar-actions">
             <button class="btn" id="btn-fx" title="Toggle screen animations">✨</button>
+            <button class="btn" id="btn-pov" title="Seat POV / screen-only">🪑</button>
+            <button class="btn" id="btn-aspect" title="Aspect ratio">⬚</button>
             <button class="btn" id="btn-concession" title="Concession stand mini-game">🍿</button>
             <button class="btn" id="btn-menu" title="Main menu">🏠</button>
             <button class="btn" id="btn-fullscreen" title="Fullscreen">⛶</button>
@@ -80,8 +82,17 @@ export class TheaterUI {
           <div class="curtain left"></div>
           <div class="curtain right"></div>
           <div class="beam"></div>
-          <div class="screen" id="theater-screen">
+          <div class="screen aspect-adapt" id="theater-screen">
+            <div class="screen-frame" aria-hidden="true"></div>
             <video id="theater-video" playsinline webkit-playsinline></video>
+            <div class="seat-pov" id="seat-pov" hidden>
+              <div class="seat-pov-rail"></div>
+              <div class="cupholders">
+                <div class="cupholder left"><span class="cup-drink" id="pov-drink-l"></span></div>
+                <div class="cupholder right"><span class="cup-drink" id="pov-drink-r"></span></div>
+              </div>
+              <div class="seat-pov-hint">You’re seated · popcorn in the holders · enjoy the show</div>
+            </div>
             <div class="screen-empty" id="screen-empty">
               <div class="screen-empty-inner">
                 <div class="pop">🍿</div>
@@ -133,6 +144,8 @@ export class TheaterUI {
     this.root.querySelector('#btn-menu').onclick = () => this.emit('open-menu');
     this.root.querySelector('#btn-fullscreen').onclick = () => this.toggleFullscreen();
     this.root.querySelector('#btn-fx').onclick = () => this.toggleFx();
+    this.root.querySelector('#btn-pov').onclick = () => this.toggleSeatPov();
+    this.root.querySelector('#btn-aspect').onclick = () => this.cycleAspect();
     this.root.querySelector('#btn-concession').onclick = () => this.toggleConcession();
     this.root.querySelector('#snack-play-conc')?.addEventListener('click', () => this.toggleConcession(true));
     this.root.querySelectorAll('.ghost-react').forEach((b) => {
@@ -148,6 +161,8 @@ export class TheaterUI {
       }
     });
     this.applyFxPref();
+    this.applyAspectPref();
+    this.applySeatPovPref();
     this.renderSeats();
     this.renderSocial();
     this.renderControls();
@@ -187,10 +202,12 @@ export class TheaterUI {
         el.classList.add('occupied');
         el.classList.toggle('me', p.id === this.me?.id);
         const items = (p.items || []).map((i) => ITEMS.find((x) => x.key === i)?.emoji || '').join('');
+        const hasDrink = (p.items || []).some((i) => i === 'soda' || i === 'popcorn' || i === 'candy');
         el.innerHTML = `
           <img src="${p.avatar || ''}" alt="" onerror="this.style.display='none'"/>
           <span class="seat-name">${escapeHtml(p.name)}</span>
-          ${items ? `<span class="seat-items">${items}</span>` : ''}`;
+          ${items ? `<span class="seat-items">${items}</span>` : ''}
+          <span class="seat-cupholder ${hasDrink ? 'filled' : ''}" title="Cup holder">${hasDrink ? items || '🥤' : '🪑'}</span>`;
       } else {
         el.classList.remove('occupied', 'me');
         el.innerHTML = '🪑';
@@ -313,6 +330,8 @@ export class TheaterUI {
     if (snack) snack.classList.toggle('hidden', !(inside && snap.snackBreak));
 
     this.updateSeats();
+    this.refreshPovDrinks();
+    this.renderMarquee();
 
     const p = snap.playback || {};
     const isHost = snap.hostId && snap.hostId === this.me?.id;
@@ -640,6 +659,7 @@ export class TheaterUI {
         <h2>🍿 Now Showing</h2>
         <button class="btn" id="lobby-close">✕</button>
       </div>
+      <div class="marquee-board" id="marquee-board"></div>
       <div class="lobby-cats">${cats
         .map((c, i) => `<button class="chip ${i === 0 ? 'active' : ''}" data-cat="${c === 'All' ? '' : escapeAttr(c)}">${escapeHtml(c)}</button>`)
         .join('')}</div>
@@ -653,6 +673,77 @@ export class TheaterUI {
       };
     });
     this.renderGrid('');
+    this.renderMarquee();
+  }
+
+  renderMarquee() {
+    const board = this.root.querySelector('#marquee-board');
+    if (!board) return;
+    const list = this.state?.marquee || [];
+    const booths = this.state?.booths || [];
+    const meId = this.me?.id;
+    const isHost = this.state?.hostId && this.state.hostId === meId;
+    if (!list.length && !booths.length) {
+      board.innerHTML = `
+        <div class="marquee-empty">
+          <strong>🎟️ Movie Marquee</strong>
+          <p>Stage up to <b>3</b> movies. Friends vote. Host starts one here — or opens another screen for a second title.</p>
+        </div>`;
+      return;
+    }
+    board.innerHTML = `
+      <div class="marquee-head"><strong>🎟️ Movie Marquee</strong><span>Pick · Vote · Not a queue</span></div>
+      <div class="marquee-slots">
+        ${[0, 1, 2]
+          .map((i) => {
+            const m = list[i];
+            if (!m) {
+              return `<div class="marquee-slot empty"><div class="slot-num">${i + 1}</div><p>Empty slot</p></div>`;
+            }
+            const voted = (m.voters || []).includes(meId);
+            return `<div class="marquee-slot ${voted ? 'voted' : ''}" data-uid="${escapeAttr(m.uid)}">
+              <div class="slot-thumb" style="background-image:url('${m.thumbnail || ''}')"></div>
+              <div class="slot-body">
+                <div class="slot-title">${escapeHtml(m.name)}</div>
+                <div class="slot-meta">${m.voteCount || 0} vote${(m.voteCount || 0) === 1 ? '' : 's'}</div>
+                <div class="slot-actions">
+                  <button class="btn small primary" data-mact="vote" data-uid="${escapeAttr(m.uid)}">${voted ? '✓ Voted' : '🗳️ Vote'}</button>
+                  ${
+                    isHost
+                      ? `<button class="btn small" data-mact="start" data-uid="${escapeAttr(m.uid)}">▶ This screen</button>
+                         <button class="btn small" data-mact="booth" data-uid="${escapeAttr(m.uid)}">🚪 New screen</button>
+                         <button class="btn small" data-mact="remove" data-uid="${escapeAttr(m.uid)}">✕</button>`
+                      : ''
+                  }
+                </div>
+              </div>
+            </div>`;
+          })
+          .join('')}
+      </div>
+      ${
+        booths.length
+          ? `<div class="booth-list"><div class="marquee-head"><strong>🚪 Other screens</strong></div>${booths
+              .map(
+                (b) =>
+                  `<button class="btn booth-chip" data-mact="join-booth" data-tid="${escapeAttr(b.theaterId)}">${escapeHtml(
+                    b.label || 'Screen'
+                  )} · ${escapeHtml(b.videoName || 'Idle')}${b.roomCode ? ' · ' + escapeHtml(b.roomCode) : ''}</button>`
+              )
+              .join('')}</div>`
+          : ''
+      }`;
+    board.querySelectorAll('[data-mact]').forEach((b) => {
+      b.onclick = () => {
+        const act = b.dataset.mact;
+        const uid = b.dataset.uid;
+        if (act === 'vote') this.emit('marquee-vote', { uid });
+        else if (act === 'start') this.emit('marquee-start', { uid });
+        else if (act === 'booth') this.emit('marquee-booth', { uid });
+        else if (act === 'remove') this.emit('marquee-remove', { uid });
+        else if (act === 'join-booth') this.emit('join-booth', { theaterId: b.dataset.tid });
+      };
+    });
   }
 
   renderGrid(category) {
@@ -672,6 +763,7 @@ export class TheaterUI {
           <div class="card-cat">${escapeHtml(v.category)}</div>
           <div class="card-actions">
             <button class="btn small primary" data-act="clan" data-uid="${v.uid}">🍿 Watch Party</button>
+            <button class="btn small" data-act="marquee" data-uid="${v.uid}">🎟️ Add to Marquee</button>
             <button class="btn small" data-act="private" data-uid="${v.uid}">🔒 Private</button>
           </div>
         </div>
@@ -681,9 +773,15 @@ export class TheaterUI {
     grid.querySelectorAll('[data-act]').forEach((b) => {
       b.onclick = () => {
         const uid = b.dataset.uid;
-        if (b.dataset.act === 'clan') this.emit('pick-clan', { uid });
-        else this.emit('pick-private', { uid });
-        this.toggleLobby(false);
+        if (b.dataset.act === 'clan') {
+          this.emit('pick-clan', { uid });
+          this.toggleLobby(false);
+        } else if (b.dataset.act === 'marquee') {
+          this.emit('marquee-add', { uid });
+        } else {
+          this.emit('pick-private', { uid });
+          this.toggleLobby(false);
+        }
       };
     });
     // Animated GIF "moving poster" on hover (Cloudflare animated thumbnail).
@@ -937,6 +1035,70 @@ export class TheaterUI {
       btn.textContent = this._fxEnabled ? '✨' : '💤';
     }
   }
+
+  applyAspectPref() {
+    const mode = prefs.aspectMode || 'adapt';
+    const screen = this.root.querySelector('#theater-screen');
+    if (!screen) return;
+    screen.classList.remove('aspect-adapt', 'aspect-stretch', 'aspect-cinema43');
+    screen.classList.add(
+      mode === 'stretch' ? 'aspect-stretch' : mode === 'cinema43' ? 'aspect-cinema43' : 'aspect-adapt'
+    );
+    const btn = this.root.querySelector('#btn-aspect');
+    if (btn) {
+      btn.title =
+        mode === 'stretch'
+          ? 'Aspect: Stretch'
+          : mode === 'cinema43'
+            ? 'Aspect: 4:3'
+            : 'Aspect: Adapt (letterbox)';
+      btn.textContent = mode === 'stretch' ? '↔' : mode === 'cinema43' ? '▭' : '⬚';
+    }
+  }
+
+  cycleAspect() {
+    const order = ['adapt', 'stretch', 'cinema43'];
+    const cur = prefs.aspectMode || 'adapt';
+    const next = order[(order.indexOf(cur) + 1) % order.length];
+    prefs.setAspectMode(next);
+    this.applyAspectPref();
+    this.toast(
+      next === 'stretch'
+        ? 'Aspect: Stretch to fill'
+        : next === 'cinema43'
+          ? 'Aspect: Classic 4:3'
+          : 'Aspect: Adapt (keep picture)'
+    );
+  }
+
+  applySeatPovPref() {
+    const on = prefs.seatPov !== false;
+    this.root.querySelector('.stage')?.classList.toggle('seat-pov-on', on);
+    const pov = this.root.querySelector('#seat-pov');
+    if (pov) pov.hidden = !on;
+    const btn = this.root.querySelector('#btn-pov');
+    if (btn) {
+      btn.classList.toggle('active', on);
+      btn.title = on ? 'Seat POV on — tap for screen-only' : 'Seat POV off — tap for theater seat view';
+    }
+    this.refreshPovDrinks();
+  }
+
+  toggleSeatPov() {
+    prefs.setSeatPov(!(prefs.seatPov !== false));
+    this.applySeatPovPref();
+    this.toast(prefs.seatPov !== false ? '🪑 Seat POV — cup holders ready' : '🎬 Screen-only view');
+  }
+
+  refreshPovDrinks() {
+    const me = (this.state?.participants || []).find((p) => p.id === this.me?.id);
+    const items = me?.items || [];
+    const l = this.root.querySelector('#pov-drink-l');
+    const r = this.root.querySelector('#pov-drink-r');
+    if (l) l.textContent = items.includes('soda') ? '🥤' : items.includes('popcorn') ? '🍿' : '';
+    if (r) r.textContent = items.includes('popcorn') ? '🍿' : items.includes('candy') ? '🍫' : items.includes('soda') ? '🥤' : '';
+  }
+
 
   // ---- Concession mini-game (Phaser, lazy-loaded) --------------------------
   async toggleConcession(forceOpen = false) {

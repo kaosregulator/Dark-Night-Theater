@@ -8,8 +8,10 @@ import Hls from 'hls.js';
 // policy and a flaky media proxy — so we always start muted, never seek past
 // what's buffered, and surface decode failures instead of a silent black screen.
 
-const DRIFT_HARD = 2.0; // seconds -> hard seek
+const DRIFT_HARD = 2.0; // seconds -> hard seek (HLS / well-buffered)
+const DRIFT_HARD_PROGRESSIVE = 6.0; // progressive uploads: avoid scrub-chasing
 const DRIFT_SOFT = 0.4; // seconds -> speed nudge
+const SEEK_EDGE_PAD = 0.35; // keep this much behind buffered end
 const PAINT_WAIT_MS = 4500;
 const PAINT_MAX_TRIES = 4;
 const UNLOCK_FRAME_WAIT_MS = 8000;
@@ -41,6 +43,9 @@ export class TheaterPlayer {
     this._paintTimer = null;
     this._wantUnmute = false;
     this._pendingSeek = null;
+    this._userUnmuted = false; // once the viewer taps unmute, never remute
+    this._skewMs = 0; // serverTime - Date.now() estimate
+    this._lastHardSeekAt = 0;
     this._started = false;
     // After MEDIA_ERR_SRC_NOT_SUPPORTED the element must be hard-reset before
     // the same /tmedia/:id (now serving converted H.264) can load again.
@@ -90,6 +95,7 @@ export class TheaterPlayer {
     this.mediaRevision = rev;
     this._started = false;
     this._pendingSeek = null;
+    this._userUnmuted = false;
     this._converting = Boolean(converting);
     this._clearPaintWatch();
 
@@ -286,25 +292,22 @@ export class TheaterPlayer {
   }
 
   // Safe seek: never jump past buffered media (progressive uploads / proxy).
+  // Important: do NOT scrub-chase the live edge while under-buffered — that
+  // causes visible fast-forward and often stalls Discord's audio pipeline.
   _safeSeek(target) {
     const t = Math.max(0, Number(target) || 0);
     const end = bufferedEnd(this.video);
     const ready = this.video.readyState >= 1;
     if (!ready || (end > 0 && t > end + 0.5)) {
       this._pendingSeek = t;
-      // Seek to the furthest safe point so playback can start.
-      if (end > 1) {
-        try {
-          this.video.currentTime = Math.max(0, end - 0.5);
-        } catch {
-          /* ignore */
-        }
-      }
+      // Hold at the current playhead (or start of buffer). Do not keep assigning
+      // currentTime to bufferedEnd — that is the scrubbing/FF bug.
       return false;
     }
     try {
       this.video.currentTime = t;
       this._pendingSeek = null;
+      this._lastHardSeekAt = Date.now();
       return true;
     } catch {
       this._pendingSeek = t;
@@ -317,22 +320,26 @@ export class TheaterPlayer {
     const t = this._pendingSeek;
     const end = bufferedEnd(this.video);
     if (this.video.readyState < 1) return;
-    if (end > 0 && t > end + 1) {
-      // Still not buffered that far — nudge forward as data arrives.
-      try {
-        this.video.currentTime = Math.max(0, end - 0.25);
-      } catch {
-        /* ignore */
-      }
-      return;
-    }
+    // Wait until the target is actually buffered, then seek once.
+    if (end > 0 && t > end + SEEK_EDGE_PAD) return;
     this._safeSeek(t);
+  }
+
+  markUnmuted() {
+    this._userUnmuted = true;
+    this._wantUnmute = false;
+    try {
+      this.video.muted = false;
+    } catch {
+      /* ignore */
+    }
   }
 
   _tryPlay() {
     const v = this.video;
     // Always attempt muted first inside Discord — unmuted autoplay is blocked.
-    if (!this._started) {
+    // Once the viewer has unmuted, never force mute again (fixes mute-until-pause).
+    if (!this._started && !this._userUnmuted) {
       v.muted = true;
       this._wantUnmute = true;
     }
@@ -414,6 +421,7 @@ export class TheaterPlayer {
         try {
           v.muted = false;
           this._wantUnmute = false;
+          this._userUnmuted = true;
         } catch {
           /* ignore */
         }
@@ -499,25 +507,42 @@ export class TheaterPlayer {
       return;
     }
 
-    // Prefer the true anchor (positionAtUpdate + updatedAt). Falling back to
-    // livePosition + serverTime keeps older snapshots working.
+    // Prefer the true anchor with server-clock skew correction when available.
+    if (playback.serverTime != null) {
+      this._skewMs = playback.serverTime - Date.now();
+    }
     let target;
     if (playback.playing && playback.updatedAt) {
-      const elapsed = (Date.now() - playback.updatedAt) / 1000;
+      const nowApprox = Date.now() + this._skewMs;
+      const elapsed = (nowApprox - playback.updatedAt) / 1000;
       target = (playback.positionAtUpdate ?? 0) + elapsed * (playback.rate || 1);
     } else if (playback.playing && playback.serverTime != null) {
-      const elapsed = (Date.now() - playback.serverTime) / 1000;
+      const elapsed = (Date.now() + this._skewMs - playback.serverTime) / 1000;
       target = (playback.livePosition ?? playback.positionAtUpdate ?? 0) + elapsed * (playback.rate || 1);
     } else {
       target = playback.livePosition ?? playback.positionAtUpdate ?? 0;
     }
     const drift = this.video.currentTime - target;
+    const progressive = playback.kind === 'file' || (!playback.hls && !playback.dash);
+    const hard = progressive ? DRIFT_HARD_PROGRESSIVE : DRIFT_HARD;
+    const bufferingAhead =
+      this._pendingSeek != null ||
+      (bufferedEnd(this.video) > 0 && target > bufferedEnd(this.video) + SEEK_EDGE_PAD);
 
     this.suppressEvents = true;
-    if (Math.abs(drift) > DRIFT_HARD || Number.isNaN(this.video.currentTime)) {
+    // While under-buffered, play naturally at 1x — do not scrub or rate-chase.
+    if (bufferingAhead && playback.playing) {
+      this.video.playbackRate = 1;
+      if (this._pendingSeek == null || Math.abs(this._pendingSeek - target) > 0.5) {
+        this._pendingSeek = target;
+      }
+    } else if (
+      (Math.abs(drift) > hard || Number.isNaN(this.video.currentTime)) &&
+      Date.now() - this._lastHardSeekAt > 1500
+    ) {
       this._safeSeek(target);
       this.video.playbackRate = playback.rate || 1;
-    } else if (playback.playing && Math.abs(drift) > DRIFT_SOFT) {
+    } else if (playback.playing && Math.abs(drift) > DRIFT_SOFT && !bufferingAhead) {
       this.video.playbackRate = (playback.rate || 1) * (drift > 0 ? 0.96 : 1.04);
     } else {
       this.video.playbackRate = playback.rate || 1;

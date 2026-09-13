@@ -57,15 +57,20 @@ function emptyPlayback() {
   };
 }
 
-function createRoom(channelId) {
+function createRoom(channelId, { parentChannelId = null, boothLabel = null } = {}) {
   const room = {
-    channelId,
+    channelId, // room key (voice channel id OR booth:<channel>:<n>)
+    parentChannelId, // voice channel this booth belongs to (null = primary room)
+    boothLabel, // short label for UI ("Screen 2")
     guildId: null,
     hostId: null,
     mode: 'idle', // 'idle' | 'clan'
     roomCode: null, // 4-letter party code (set when a movie starts)
     codeLocked: false, // if true, joiners must enter the code before the foyer ritual
     snackBreak: false, // funny intermission overlay while the movie stays paused
+    // Up to 3 staged titles — vote/pick, not a play queue.
+    marquee: [], // [{ uid, name, category, thumbnail, durationSeconds, votes: {userId:true} }]
+    booths: [], // child theater ids spawned from this voice channel
     playback: emptyPlayback(),
     participants: new Map(), // userId -> { id, name, avatar, seat, items[], inside, codeOk }
     controlMessage: null, // { channelId, messageId } of the text-channel control embed
@@ -89,12 +94,33 @@ export function livePosition(room, now = Date.now()) {
 export function snapshot(room) {
   return {
     channelId: room.channelId,
+    parentChannelId: room.parentChannelId || null,
+    boothLabel: room.boothLabel || null,
     guildId: room.guildId,
     hostId: room.hostId,
     mode: room.mode,
     roomCode: room.roomCode,
     codeLocked: Boolean(room.codeLocked),
     snackBreak: Boolean(room.snackBreak),
+    marquee: (room.marquee || []).map((m) => ({
+      uid: m.uid,
+      name: m.name,
+      category: m.category || '',
+      thumbnail: m.thumbnail || '',
+      durationSeconds: m.durationSeconds || 0,
+      voteCount: Object.keys(m.votes || {}).length,
+      voters: Object.keys(m.votes || {}),
+    })),
+    booths: (room.booths || []).map((b) => {
+      const child = rooms.get(b.theaterId);
+      return {
+        theaterId: b.theaterId,
+        label: b.label,
+        roomCode: child?.roomCode || null,
+        videoName: child?.playback?.videoName || b.videoName || null,
+        mode: child?.mode || 'idle',
+      };
+    }),
     playback: {
       ...room.playback,
       // include a computed live position so late joiners seek correctly
@@ -331,6 +357,119 @@ export function setPlaybackSource(channelId, playback = {}) {
 }
 
 // Load a movie into the clan session and start it.
+
+const MAX_MARQUEE = 3;
+
+function primaryRoomId(channelOrTheaterId) {
+  const room = rooms.get(channelOrTheaterId);
+  return room?.parentChannelId || channelOrTheaterId;
+}
+
+/** Stage a title on the marquee (max 3). Host/anyone in room can nominate. */
+export function addToMarquee(channelId, video) {
+  const room = getRoom(channelId);
+  if (!video?.uid) return { ok: false, reason: 'Missing video' };
+  room.marquee = room.marquee || [];
+  if (room.marquee.some((m) => m.uid === video.uid)) {
+    broadcast(room, { event: { type: 'marquee' } });
+    return { ok: true, marquee: snapshot(room).marquee };
+  }
+  if (room.marquee.length >= MAX_MARQUEE) {
+    return { ok: false, reason: 'Marquee is full (3 movies max). Remove one first.' };
+  }
+  room.marquee.push({
+    uid: video.uid,
+    name: video.name,
+    category: video.category || '',
+    thumbnail: video.thumbnail || video.animatedThumbnail || '',
+    durationSeconds: video.durationSeconds || video.duration || 0,
+    votes: {},
+  });
+  broadcast(room, { event: { type: 'marquee', action: 'add', uid: video.uid } });
+  return { ok: true, marquee: snapshot(room).marquee };
+}
+
+export function removeFromMarquee(channelId, by, uid) {
+  const room = getRoom(channelId);
+  if (room.hostId && room.hostId !== by) {
+    return { ok: false, reason: 'Only the host can remove marquee titles.' };
+  }
+  room.marquee = (room.marquee || []).filter((m) => m.uid !== uid);
+  broadcast(room, { event: { type: 'marquee', action: 'remove', uid } });
+  return { ok: true };
+}
+
+/** One vote per user — switching vote moves their ballot. */
+export function voteMarquee(channelId, userId, uid) {
+  const room = getRoom(channelId);
+  const list = room.marquee || [];
+  if (!list.some((m) => m.uid === uid)) return { ok: false, reason: 'That title is not on the marquee.' };
+  for (const m of list) {
+    if (m.votes?.[userId]) delete m.votes[userId];
+  }
+  const target = list.find((m) => m.uid === uid);
+  target.votes = target.votes || {};
+  target.votes[userId] = true;
+  broadcast(room, { event: { type: 'marquee', action: 'vote', uid, userId } });
+  return { ok: true, marquee: snapshot(room).marquee };
+}
+
+export function clearMarquee(channelId, by) {
+  const room = getRoom(channelId);
+  if (room.hostId && room.hostId !== by) {
+    return { ok: false, reason: 'Only the host can clear the marquee.' };
+  }
+  room.marquee = [];
+  broadcast(room, { event: { type: 'marquee', action: 'clear' } });
+  return { ok: true };
+}
+
+/**
+ * Open an independent theater booth under this voice channel so another Activity
+ * instance can watch a different marquee title (same VC chat, separate screen).
+ */
+export function openBooth(channelId, { hostId, guildId, video, playback, label } = {}) {
+  const parent = getRoom(channelId);
+  parent.booths = parent.booths || [];
+  if (parent.booths.length >= MAX_MARQUEE) {
+    return { ok: false, reason: 'Already have 3 theater screens for this channel.' };
+  }
+  const n = parent.booths.length + 1;
+  const theaterId = `booth:${channelId}:${n}`;
+  const booth = createRoom(theaterId, {
+    parentChannelId: channelId,
+    boothLabel: label || `Screen ${n}`,
+  });
+  parent.booths.push({ theaterId, label: booth.boothLabel, videoName: video?.name || null });
+  if (video && playback) {
+    startClanMovie(theaterId, { hostId, guildId: guildId || parent.guildId, video, playback });
+  }
+  // Drop started title from parent marquee so votes stay for remaining picks.
+  if (video?.uid) {
+    parent.marquee = (parent.marquee || []).filter((m) => m.uid !== video.uid);
+  }
+  broadcast(parent, {
+    event: {
+      type: 'booth',
+      theaterId,
+      label: booth.boothLabel,
+      roomCode: booth.roomCode,
+      video: video ? { uid: video.uid, name: video.name } : null,
+    },
+  });
+  return {
+    ok: true,
+    theaterId,
+    roomCode: booth.roomCode,
+    snapshot: snapshot(booth),
+  };
+}
+
+export function listBooths(channelId) {
+  const parent = getRoom(primaryRoomId(channelId));
+  return snapshot(parent).booths;
+}
+
 export function startClanMovie(channelId, { hostId, guildId, video, playback }) {
   const room = getRoom(channelId);
   // Retire previous code mapping if any.
@@ -367,6 +506,8 @@ export function startClanMovie(channelId, { hostId, guildId, video, playback }) 
     p.inside = p.id === hostId;
     p.codeOk = p.id === hostId || !room.codeLocked;
   }
+  // Playing this title — pull it off the marquee so remaining picks stay votable.
+  room.marquee = (room.marquee || []).filter((m) => m.uid !== video.uid);
   broadcast(room, {
     event: { type: 'movie', video: { uid: video.uid, name: video.name }, roomCode: room.roomCode },
   });

@@ -15,8 +15,10 @@ export function attachWebSocket(server) {
 
   wss.on('connection', (ws, req) => {
     const url = new URL(req.url, 'http://localhost');
-    const channelId = url.searchParams.get('channelId');
+    // theaterId lets an Activity instance join a booth screen; default = voice channel room.
+    const channelId = url.searchParams.get('theaterId') || url.searchParams.get('channelId');
     ws.channelId = channelId;
+    ws.voiceChannelId = url.searchParams.get('channelId') || channelId;
     ws.user = null;
     ws.alive = true;
 
@@ -114,6 +116,30 @@ export function attachWebSocket(server) {
             sessions.setHost(ws.channelId, uid);
           }
           break;
+
+        case 'marquee-add': {
+          const result = sessions.addToMarquee(ws.channelId, msg.video || { uid: msg.uid, name: msg.name });
+          if (!result.ok) send({ type: 'error', error: result.reason || 'Marquee add failed' });
+          break;
+        }
+
+        case 'marquee-remove': {
+          const result = sessions.removeFromMarquee(ws.channelId, uid, msg.uid);
+          if (!result.ok) send({ type: 'error', error: result.reason || 'Marquee remove failed' });
+          break;
+        }
+
+        case 'marquee-vote': {
+          const result = sessions.voteMarquee(ws.channelId, uid, msg.uid);
+          if (!result.ok) send({ type: 'error', error: result.reason || 'Vote failed' });
+          break;
+        }
+
+        case 'marquee-clear': {
+          const result = sessions.clearMarquee(ws.channelId, uid);
+          if (!result.ok) send({ type: 'error', error: result.reason || 'Clear failed' });
+          break;
+        }
 
         default:
           break;

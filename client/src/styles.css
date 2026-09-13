@@ -526,3 +526,115 @@ body.cinema-fs .topbar .brand span { display: none !important; }
   .ghost-react[data-react="wow"],
   .ghost-react[data-react="candy"] { display: none; }
 }
+
+
+/* ---- Aspect modes -------------------------------------------------------- */
+#theater-screen.aspect-adapt video,
+.screen.aspect-adapt video { object-fit: contain; }
+#theater-screen.aspect-stretch video,
+.screen.aspect-stretch video { object-fit: fill; }
+#theater-screen.aspect-cinema43,
+.screen.aspect-cinema43 {
+  aspect-ratio: 4 / 3;
+  max-width: min(900px, 100%);
+}
+#theater-screen.aspect-cinema43 video,
+.screen.aspect-cinema43 video { object-fit: contain; }
+.stage.cinema-fs #theater-screen.aspect-cinema43,
+.stage.cinema-fs .screen.aspect-cinema43 {
+  max-width: min(100%, calc(100vh * 4 / 3));
+  height: 100%;
+  aspect-ratio: 4 / 3;
+}
+.screen-frame {
+  pointer-events: none;
+  position: absolute; inset: 0;
+  border: 2px solid rgba(201, 162, 39, 0.22);
+  box-shadow: inset 0 0 40px rgba(0,0,0,.55);
+  border-radius: inherit;
+  z-index: 2;
+}
+
+/* ---- Seat POV / cup holders --------------------------------------------- */
+.seat-pov {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  height: 28%;
+  z-index: 5;
+  pointer-events: none;
+  background: linear-gradient(to top, rgba(8,6,10,.92) 10%, rgba(8,6,10,.35) 55%, transparent 100%);
+}
+.seat-pov[hidden] { display: none !important; }
+.seat-pov-rail {
+  position: absolute; left: 6%; right: 6%; bottom: 38%;
+  height: 10px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #2a1c14, #4a3424, #2a1c14);
+  box-shadow: 0 8px 18px rgba(0,0,0,.45);
+}
+.cupholders {
+  position: absolute; left: 10%; right: 10%; bottom: 12%;
+  display: flex; justify-content: space-between;
+}
+.cupholder {
+  width: 54px; height: 64px;
+  border-radius: 10px 10px 14px 14px;
+  border: 1px solid rgba(201,162,39,.35);
+  background: linear-gradient(180deg, rgba(40,30,22,.8), rgba(12,10,14,.95));
+  box-shadow: inset 0 8px 12px rgba(0,0,0,.35);
+  display: grid; place-items: center;
+}
+.cup-drink { font-size: 1.45rem; filter: drop-shadow(0 4px 6px rgba(0,0,0,.4)); }
+.seat-pov-hint {
+  position: absolute; left: 0; right: 0; bottom: 2px;
+  text-align: center; font-size: .68rem; color: rgba(255,240,210,.55);
+  letter-spacing: .04em;
+}
+.stage.cinema-fs.seat-pov-on .seat-pov { height: 22%; }
+.btn.active { outline: 1px solid var(--gold, #c9a227); background: rgba(201,162,39,.18); }
+
+.seat-cupholder {
+  position: absolute; right: 2px; bottom: 2px;
+  font-size: .7rem; opacity: .85;
+}
+.seat-cupholder.filled { filter: drop-shadow(0 0 4px rgba(201,162,39,.45)); }
+
+/* ---- Marquee board (picker / vote, not a queue) -------------------------- */
+.marquee-board {
+  margin: 0 0 .85rem;
+  padding: .75rem;
+  border: 1px solid rgba(201,162,39,.28);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(32,24,18,.9), rgba(12,10,16,.95));
+}
+.marquee-empty { color: var(--muted, #b9a88a); font-size: .9rem; }
+.marquee-empty strong { color: var(--gold-2, #e6c56a); display: block; margin-bottom: .25rem; }
+.marquee-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: .55rem; color: var(--gold-2, #e6c56a); font-size: .9rem;
+}
+.marquee-head span { color: var(--muted, #b9a88a); font-size: .75rem; }
+.marquee-slots {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .55rem;
+}
+.marquee-slot {
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 12px; overflow: hidden; background: rgba(0,0,0,.28);
+  min-height: 150px;
+}
+.marquee-slot.empty {
+  display: grid; place-items: center; color: var(--muted, #b9a88a); font-size: .8rem;
+}
+.marquee-slot.voted { border-color: rgba(201,162,39,.55); box-shadow: 0 0 0 1px rgba(201,162,39,.2); }
+.slot-num { font-size: 1.2rem; opacity: .5; }
+.slot-thumb { aspect-ratio: 16/9; background: #000 center/cover no-repeat; }
+.slot-body { padding: .45rem .5rem .55rem; }
+.slot-title { font-weight: 700; font-size: .82rem; line-height: 1.25; margin-bottom: .2rem; }
+.slot-meta { font-size: .72rem; color: var(--muted, #b9a88a); margin-bottom: .4rem; }
+.slot-actions { display: flex; flex-wrap: wrap; gap: .25rem; }
+.booth-list { margin-top: .65rem; display: flex; flex-wrap: wrap; gap: .35rem; }
+.booth-chip { font-size: .75rem; }
+
+@media (max-width: 720px) {
+  .marquee-slots { grid-template-columns: 1fr; }
+  .cupholder { width: 44px; height: 52px; }
+}

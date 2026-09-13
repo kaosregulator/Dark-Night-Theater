@@ -14,9 +14,11 @@ export class SyncClient extends EventTarget {
     this._closedByUs = false;
   }
 
-  connect() {
+  connect(theaterId = null) {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${proto}://${location.host}/ws?channelId=${encodeURIComponent(dc.channelId)}`;
+    this.theaterId = theaterId || this.theaterId || null;
+    const tid = this.theaterId ? `&theaterId=${encodeURIComponent(this.theaterId)}` : '';
+    const url = `${proto}://${location.host}/ws?channelId=${encodeURIComponent(dc.channelId)}${tid}`;
     const ws = new WebSocket(url);
     this.ws = ws;
 
@@ -45,7 +47,7 @@ export class SyncClient extends EventTarget {
 
     ws.addEventListener('close', () => {
       if (this._closedByUs) return;
-      setTimeout(() => this.connect(), this.backoff);
+      setTimeout(() => this.connect(this.theaterId), this.backoff);
       this.backoff = Math.min(this.backoff * 2, 15000);
     });
     ws.addEventListener('error', () => ws.close());
@@ -75,6 +77,25 @@ export class SyncClient extends EventTarget {
   }
   react(kind) {
     this.send({ type: 'react', kind });
+  }
+  marqueeAdd(video) {
+    this.send({ type: 'marquee-add', video });
+  }
+  marqueeRemove(uid) {
+    this.send({ type: 'marquee-remove', uid });
+  }
+  marqueeVote(uid) {
+    this.send({ type: 'marquee-vote', uid });
+  }
+  marqueeClear() {
+    this.send({ type: 'marquee-clear' });
+  }
+  /** Switch this client onto another theater booth without leaving the VC. */
+  switchTheater(theaterId) {
+    this.close();
+    this._closedByUs = false;
+    this.theaterId = theaterId || null;
+    this.connect(this.theaterId);
   }
 
   close() {
