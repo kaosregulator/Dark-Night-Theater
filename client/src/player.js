@@ -54,6 +54,7 @@ export class TheaterPlayer {
     this._converting = false;
     this._lastPlayback = null;
     this._paintTries = 0;
+    this._lastPlayState = null; // Track last applied play state to prevent loops
 
     // Critical for Discord iframe / mobile WebViews.
     this.video.playsInline = true;
@@ -277,11 +278,11 @@ export class TheaterPlayer {
     }
     const err = this.video.error;
     const code = err?.code;
-    let detail = 'Could not decode this movie in Discord’s browser.';
+    let detail = 'Could not decode this movie in Discord's browser.';
     // Prefer numeric codes — MediaError globals are missing in some embeds/tests.
     if (code === 4 /* MEDIA_ERR_SRC_NOT_SUPPORTED */) {
       detail =
-        'This file’s codecs aren’t supported here. Re-export as MP4 H.264 video + AAC audio (HandBrake “Fast 1080p30”), or wait for the server convert to finish.';
+        'This file's codecs aren't supported here. Re-export as MP4 H.264 video + AAC audio (HandBrake "Fast 1080p30"), or wait for the server convert to finish.';
     } else if (code === 2 /* MEDIA_ERR_NETWORK */) {
       detail = 'Network error loading the stream — keep the host tab open and tap Play again.';
     } else if (code === 3 /* MEDIA_ERR_DECODE */) {
@@ -548,11 +549,23 @@ export class TheaterPlayer {
       this.video.playbackRate = playback.rate || 1;
     }
 
-    if (playback.playing && this.video.paused) {
+    // FIX: Prevent play/pause loop by tracking last applied state
+    // Only call _tryPlay() if we're transitioning from paused to playing
+    const needsPlay = playback.playing && this.video.paused;
+    const needsPause = !playback.playing && !this.video.paused;
+    
+    if (needsPlay && this._lastPlayState !== 'playing') {
+      this._lastPlayState = 'playing';
       this._tryPlay();
-    } else if (!playback.playing && !this.video.paused) {
+    } else if (needsPause && this._lastPlayState !== 'paused') {
+      this._lastPlayState = 'paused';
       this.video.pause();
+    } else if (!playback.playing) {
+      this._lastPlayState = 'paused';
+    } else if (playback.playing) {
+      this._lastPlayState = 'playing';
     }
+
     setTimeout(() => (this.suppressEvents = false), 50);
   }
 
@@ -568,6 +581,7 @@ export class TheaterPlayer {
     this._hadMediaError = false;
     this._awaitingConversion = false;
     this._converting = false;
+    this._lastPlayState = null;
     try {
       this.video.pause();
     } catch {
@@ -592,3 +606,4 @@ export class TheaterPlayer {
     return this.video.currentTime || 0;
   }
 }
+
