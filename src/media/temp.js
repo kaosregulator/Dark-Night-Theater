@@ -371,6 +371,13 @@ export function scrub(id) {
       /* ignore */
     }
   }
+  if (session.posterFile) {
+    try {
+      fs.rmSync(session.posterFile, { force: true });
+    } catch {
+      /* ignore */
+    }
+  }
   byId.delete(id);
   if (session.channelId && byChannel.get(session.channelId) === id) byChannel.delete(session.channelId);
   session.emitter.emit('progress'); // release any waiters

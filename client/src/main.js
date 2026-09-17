@@ -118,6 +118,9 @@ async function boot() {
   ui.on('claim-host', () => sync.claimHost());
   ui.on('react', ({ kind }) => sync.react(kind));
   ui.on('open-menu', () => menu());
+  ui.on('theater-audio', () => {
+    player.markUnmuted();
+  });
   ui.on('enter-theater', ({ seat, items }) => {
     sync.enter({ seat, items });
     enterWatching(ui, player, sync);

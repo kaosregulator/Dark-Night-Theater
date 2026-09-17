@@ -81,6 +81,20 @@ tmedia.get('/:id/index.m3u8', (req, res) => {
   res.send(body);
 });
 
+// Optional multiplex poster (no media token — small public image for light-boxes).
+tmedia.get('/:id/poster', (req, res) => {
+  const { id } = req.params;
+  const session = temp.find(id);
+  if (!session?.posterFile || !fs.existsSync(session.posterFile)) {
+    return res.status(404).end('Not found');
+  }
+  temp.touch(session);
+  const ext = path.extname(session.posterFile).toLowerCase();
+  const type =
+    ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : ext === '.gif' ? 'image/gif' : 'image/jpeg';
+  return sendWhole(res, session.posterFile, type, req.method === 'HEAD');
+});
+
 // ---- HLS: segments ---------------------------------------------------------
 tmedia.get('/:id/:seg', (req, res) => {
   const { id, seg } = req.params;

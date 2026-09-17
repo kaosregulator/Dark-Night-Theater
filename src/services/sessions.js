@@ -37,6 +37,9 @@ function emptyPlayback() {
   return {
     videoUid: null,
     videoName: null,
+    description: null,
+    posterUrl: null,
+    thumbnail: null,
     src: null, // local /media URL (or HLS manifest)
     kind: null, // 'file' | 'hls'
     feedStatus: null, // temp-session upload feed: 'streaming' | 'stalled' | 'complete'
@@ -332,6 +335,12 @@ export function setPlaybackMeta(channelId, meta = {}) {
   if ('videoCodec' in meta) room.playback.videoCodec = meta.videoCodec || null;
   if ('audioCodec' in meta) room.playback.audioCodec = meta.audioCodec || null;
   if (meta.converting != null) room.playback.converting = Boolean(meta.converting);
+  if ('videoName' in meta && meta.videoName) room.playback.videoName = String(meta.videoName).slice(0, 160);
+  if ('description' in meta) room.playback.description = meta.description ? String(meta.description).slice(0, 800) : null;
+  if ('posterUrl' in meta) {
+    room.playback.posterUrl = meta.posterUrl ? String(meta.posterUrl).slice(0, 800) : null;
+    room.playback.thumbnail = room.playback.posterUrl;
+  }
   if (meta.bumpRevision || meta.mediaRevision != null) {
     room.playback.mediaRevision =
       meta.mediaRevision != null
@@ -485,6 +494,9 @@ export function startClanMovie(channelId, { hostId, guildId, video, playback }) 
     ...emptyPlayback(),
     videoUid: video.uid,
     videoName: video.name,
+    description: video.description || playback.description || null,
+    posterUrl: video.posterUrl || video.thumbnail || video.animatedThumbnail || playback.posterUrl || null,
+    thumbnail: video.thumbnail || video.animatedThumbnail || playback.posterUrl || null,
     src: playback.src,
     kind: playback.kind,
     hls: playback.hls,
