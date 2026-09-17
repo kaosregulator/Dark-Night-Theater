@@ -6,15 +6,15 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 // Mini patron character, 1st/3rd person, seat/door collision, clickable HUD.
 
 const MODEL_URL = '/models/cinema-multiplex.glb';
-const SPEED = 3.6;
-const EYE_FP = 1.55;
-const EYE_TP = 1.35;
+const SPEED = 3.4;
+const EYE_FP = 1.48;
+const EYE_SIT = 1.12;
 const REF_DIST = 3;
 const MAX_AUDIBLE = 34;
 const VOL_SMOOTH = 5;
-const RADIUS = 0.32;
-const TP_BACK = 3.4;
-const TP_HEIGHT = 1.55;
+const RADIUS = 0.24; // slim enough to walk row aisles between seats
+const TP_BACK = 2.8;
+const TP_HEIGHT = 1.45;
 
 /** Shared Web Audio graph — createMediaElementSource once per <video>. */
 let sharedAudio = null;
@@ -176,7 +176,7 @@ export async function openMultiplex(
           <span id="mx-movie-flag">🎬 Movie Playing</span>
           <button type="button" class="mx-audio-flag" id="mx-audio-flag">🔇 Click to Enable Theater Audio</button>
         </div>
-        <div class="multiplex-hint" id="mx-hint">WASD walk · click canvas to look · Esc frees cursor for buttons</div>
+        <div class="multiplex-hint" id="mx-hint">WASD walk anytime · drag canvas to look · Esc frees cursor</div>
         <div class="multiplex-people" id="mx-people"></div>
         <div class="multiplex-actions">
           <button type="button" class="btn" id="mx-view" title="First / third person">👁 3rd</button>
@@ -195,9 +195,9 @@ export async function openMultiplex(
         <div class="mx-stick" id="mx-stick"><div class="mx-knob" id="mx-knob"></div></div>
         <div class="mx-lookzone" id="mx-lookzone"></div>
       </div>
-      <div class="multiplex-lookchip" id="mx-lookchip">
-        <button type="button" class="btn ctl-main" id="mx-enter">🖱 Click canvas to look around</button>
-        <p class="mx-lookchip-note">HUD buttons stay clickable · Esc frees the mouse</p>
+      <div class="multiplex-lookchip hidden" id="mx-lookchip">
+        <button type="button" class="btn ctl-main" id="mx-enter">🖱 Drag canvas to look (optional lock)</button>
+        <p class="mx-lookchip-note">WASD always walks · HUD stays clickable</p>
       </div>
       <div class="multiplex-seatmap hidden" id="mx-seatmap">
         <div class="mx-seatmap-head">
@@ -225,12 +225,13 @@ export async function openMultiplex(
   const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
   hostEl.querySelector('#mx-touch').style.display = isTouch ? 'block' : 'none';
   hostEl.querySelector('#mx-hint').textContent = isTouch
-    ? 'Left stick walk · right drag look · Seats / Watch stay tappable'
-    : 'WASD walk · click canvas to look · Esc frees cursor for buttons';
+    ? 'Left stick walks · right drag looks · Seats / Watch stay tappable'
+    : 'WASD walks anytime · drag canvas to look · Esc frees cursor for buttons';
   if (movieTitle) {
     hostEl.querySelector('#mx-movie-flag').textContent = `🎬 Movie Playing · ${movieTitle}`;
   }
-  if (isTouch) lookChip.classList.add('hidden');
+  // Free-walk by default — no click gate to move.
+  lookChip.classList.add('hidden');
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -272,17 +273,29 @@ export async function openMultiplex(
   pitchObj.add(camera);
 
   let thirdPerson = true; // default 3rd so you see your mini patron
-  let looking = false;
+  let looking = false; // pointer-lock optional
+  let dragging = false; // click-drag look without lock
   let sitting = false;
   let pitch = 0;
   let walkPhase = 0;
+  let savedThirdPerson = true;
 
   function applyCameraMode() {
+    if (sitting) {
+      // Seat POV — first-person eye line toward the screen
+      character.visible = false;
+      camera.position.set(0, EYE_SIT, 0.05);
+      camera.rotation.set(0, 0, 0);
+      pitch = THREE.MathUtils.clamp(pitch, -0.45, 0.35);
+      pitchObj.rotation.x = pitch;
+      viewBtn.textContent = '👁 Seat';
+      viewBtn.title = 'Seated POV';
+      return;
+    }
     if (thirdPerson) {
-      character.visible = !sitting ? true : true;
+      character.visible = true;
       camera.position.set(0, TP_HEIGHT, TP_BACK);
       camera.rotation.set(0, 0, 0);
-      pitchObj.rotation.x = 0;
       pitch = THREE.MathUtils.clamp(pitch, -0.55, 0.35);
       pitchObj.rotation.x = pitch;
       viewBtn.textContent = '👁 1st';
@@ -320,16 +333,15 @@ export async function openMultiplex(
   window.addEventListener('keydown', keyDown);
   window.addEventListener('keyup', keyUp);
 
-  // ---- Pointer lock: canvas only — HUD stays free ----
+  // ---- Look: free drag on canvas + optional pointer lock (WASD never gated) ----
   function setLooking(on) {
     looking = on;
-    lookChip.classList.toggle('hidden', on || isTouch);
     if (!on && document.pointerLockElement === canvas) {
       document.exitPointerLock?.();
     }
   }
 
-  async function beginLook() {
+  async function beginLookLock() {
     await unlockAudio();
     if (isTouch) {
       setLooking(true);
@@ -344,27 +356,49 @@ export async function openMultiplex(
 
   hostEl.querySelector('#mx-enter').onclick = (e) => {
     e.stopPropagation();
-    beginLook();
+    beginLookLock();
   };
-  canvas.addEventListener('click', () => {
-    if (!looking && !isTouch) beginLook();
+
+  // Drag-to-look (no lock required) — feels like controlling a mini character
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    if (e.target !== canvas) return;
+    dragging = true;
+    canvas.setPointerCapture?.(e.pointerId);
+    unlockAudio();
   });
+  canvas.addEventListener('pointerup', (e) => {
+    dragging = false;
+    try {
+      canvas.releasePointerCapture?.(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+  });
+  canvas.addEventListener('pointercancel', () => {
+    dragging = false;
+  });
+  canvas.addEventListener('dblclick', () => beginLookLock());
+
   document.addEventListener('pointerlockchange', onPointerLock);
   function onPointerLock() {
     const locked = document.pointerLockElement === canvas;
     setLooking(locked);
   }
   const onMouseMove = (e) => {
-    if (!looking || isTouch) return;
-    yaw.rotation.y -= e.movementX * 0.0022;
-    pitch = THREE.MathUtils.clamp(pitch - e.movementY * 0.0018, thirdPerson ? -0.55 : -1.15, thirdPerson ? 0.35 : 1.15);
+    const active = looking || dragging;
+    if (!active || isTouch) return;
+    const sens = looking ? 0.0022 : 0.003;
+    yaw.rotation.y -= e.movementX * sens;
+    const pMax = sitting ? 0.35 : thirdPerson ? 0.35 : 1.15;
+    const pMin = sitting ? -0.45 : thirdPerson ? -0.55 : -1.15;
+    pitch = THREE.MathUtils.clamp(pitch - e.movementY * (sens * 0.85), pMin, pMax);
     pitchObj.rotation.x = pitch;
   };
   document.addEventListener('mousemove', onMouseMove);
 
   setupTouchControls(hostEl, touchMove, lookDelta, () => {
     unlockAudio();
-    setLooking(true);
   });
 
   // ---- Other guests ----
@@ -457,10 +491,27 @@ export async function openMultiplex(
     pos.z = z;
   }
 
+  // Height samples from GLB (front seats low → back seats high → foyer).
+  const heightSamples = []; // { x, y } sorted by x
+
   function floorY(x) {
-    if (x >= -4.2) return 0;
-    const t = THREE.MathUtils.clamp((-4.2 - x) / 8.5, 0, 1);
-    return t * 1.55;
+    if (!heightSamples.length) {
+      // Correct stadium rise: screen (west/−X) low, foyer (east) high then flat.
+      if (x >= -4.2) return 0;
+      const t = THREE.MathUtils.clamp((x - -12.2) / (-5.2 - -12.2), 0, 1);
+      return t * 1.55;
+    }
+    if (x <= heightSamples[0].x) return heightSamples[0].y;
+    if (x >= heightSamples[heightSamples.length - 1].x) return heightSamples[heightSamples.length - 1].y;
+    for (let i = 0; i < heightSamples.length - 1; i++) {
+      const a = heightSamples[i];
+      const b = heightSamples[i + 1];
+      if (x >= a.x && x <= b.x) {
+        const u = (x - a.x) / Math.max(1e-6, b.x - a.x);
+        return a.y + (b.y - a.y) * u;
+      }
+    }
+    return 0;
   }
 
   // ---- Load GLB + screen + door + seat colliders ----
@@ -468,7 +519,8 @@ export async function openMultiplex(
   let videoTex = null;
   let screenMat = null;
   const posterSlots = [];
-  const seatAnchors = buildSeatAnchors();
+  let seatAnchors = buildSeatAnchors();
+  const liveSeats = []; // { id, x, y, z, sitY } from GLB
 
   try {
     const loader = new GLTFLoader();
@@ -478,6 +530,7 @@ export async function openMultiplex(
     const root = gltf.scene;
     const cinemaScreenParts = [];
     let doorBox = null;
+    const rowHeights = new Map(); // round(x,1) -> floor Y under that row
     root.traverse((obj) => {
       if (!obj.isMesh) return;
       obj.castShadow = false;
@@ -496,8 +549,77 @@ export async function openMultiplex(
         if (!doorBox) doorBox = b.clone();
         else doorBox.union(b);
       }
+      // Foyer props you shouldn't walk through (concessions, counters, kiosks)
+      if (
+        !n.includes('kiosk-screen') &&
+        (n.includes('concessions-counter') ||
+          n.includes('popcorn-kettle') ||
+          n.includes('popcorn-warmer') ||
+          n.includes('nacho-and-hot-dog') ||
+          n.includes('box-office-counter') ||
+          (n.includes('ticket-kiosk') && /\/[0-4]$/.test(n)) ||
+          n.includes('ticket-tear-podium') ||
+          n.includes('foyer-bench'))
+      ) {
+        obj.updateWorldMatrix(true, false);
+        const b = new THREE.Box3().setFromObject(obj);
+        const size = b.getSize(new THREE.Vector3());
+        // One solid footprint per chunk — skip tiny garnish meshes
+        if (size.y > 0.35 && size.x * size.z > 0.35) {
+          walls.push({
+            min: [b.min.x - 0.05, b.min.z - 0.05],
+            max: [b.max.x + 0.05, b.max.z + 0.05],
+          });
+        }
+      }
+      // Real seat meshes → grounded colliders + sit anchors
+      if (/\/seat-\d+$/.test(n) || /seat-\d+$/.test(n)) {
+        obj.updateWorldMatrix(true, false);
+        const b = new THREE.Box3().setFromObject(obj);
+        const c = b.getCenter(new THREE.Vector3());
+        const size = b.getSize(new THREE.Vector3());
+        // Platform under the cushion (don't float)
+        const floor = b.min.y;
+        const sitY = b.max.y - 0.08;
+        const key = Math.round(c.x * 2) / 2;
+        if (!rowHeights.has(key) || floor < rowHeights.get(key)) rowHeights.set(key, floor);
+        liveSeats.push({
+          id: obj.name,
+          x: c.x,
+          y: floor,
+          z: c.z,
+          sitY,
+          // Tight collider — leave walkable gaps between chairs
+          min: [c.x - Math.min(0.22, size.x * 0.35), c.z - Math.min(0.17, size.z * 0.35)],
+          max: [c.x + Math.min(0.22, size.x * 0.35), c.z + Math.min(0.17, size.z * 0.35)],
+        });
+      }
+      if (n.includes('aisle-step') || n.includes('aisle-floor') || n.includes('foyer-floor') || n === 'cinema-multiplex-and-foyer-floor') {
+        obj.updateWorldMatrix(true, false);
+        const b = new THREE.Box3().setFromObject(obj);
+        const c = b.getCenter(new THREE.Vector3());
+        const key = Math.round(c.x * 2) / 2;
+        const y = b.min.y;
+        if (!rowHeights.has(key) || y < rowHeights.get(key)) rowHeights.set(key, y);
+      }
     });
     scene.add(root);
+
+    // Build interpolated floor from measured row heights
+    const sortedKeys = [...rowHeights.keys()].sort((a, b) => a - b);
+    for (const k of sortedKeys) heightSamples.push({ x: k, y: rowHeights.get(k) });
+    // Ensure foyer lands at ~0
+    if (!heightSamples.some((s) => s.x > -3)) heightSamples.push({ x: -2, y: 0 }, { x: 2, y: 0 });
+    heightSamples.sort((a, b) => a.x - b.x);
+
+    // Prefer live seats for map + colliders
+    if (liveSeats.length >= 8) {
+      seatColliders.length = 0;
+      for (const s of liveSeats) {
+        seatColliders.push({ min: s.min, max: s.max });
+      }
+      seatAnchors = seatsToRows(liveSeats);
+    }
 
     // Widen door gap using real exit-door bounds if found; keep center aisle open.
     if (doorBox) {
@@ -563,17 +685,20 @@ export async function openMultiplex(
       screenGlow.position.x += 0.45;
     }
 
-    // Seat solid colliders (don't walk through chairs)
-    for (const row of seatAnchors) {
-      for (const s of row.seats) {
-        seatColliders.push({
-          min: [s.x - 0.32, s.z - 0.28],
-          max: [s.x + 0.32, s.z + 0.28],
-        });
+    // Fallback seat colliders only when GLB seats weren't found
+    if (!seatColliders.length) {
+      for (const row of seatAnchors) {
+        for (const s of row.seats) {
+          seatColliders.push({
+            min: [s.x - 0.2, s.z - 0.16],
+            max: [s.x + 0.2, s.z + 0.16],
+          });
+        }
       }
     }
 
-    playerRoot.position.set(-9.2, floorY(-9.2), 0);
+    // Spawn mid-auditorium on the measured floor (center aisle)
+    playerRoot.position.set(-9.2, floorY(-9.2), -0.95);
     applyPosters(posterSlots, posterUrl);
   } catch (err) {
     console.warn('multiplex load failed', err);
@@ -587,8 +712,8 @@ export async function openMultiplex(
     for (const row of seatAnchors) {
       for (const s of row.seats) {
         seatColliders.push({
-          min: [s.x - 0.32, s.z - 0.28],
-          max: [s.x + 0.32, s.z + 0.28],
+          min: [s.x - 0.2, s.z - 0.16],
+          max: [s.x + 0.2, s.z + 0.16],
         });
       }
     }
@@ -725,35 +850,48 @@ export async function openMultiplex(
   // ---- Seat map ----
   function sitInSeat(seat) {
     setLooking(false);
+    dragging = false;
+    savedThirdPerson = thirdPerson;
     sitting = true;
-    playerRoot.position.set(seat.x, floorY(seat.x), seat.z);
-    yaw.rotation.y = Math.PI / 2;
-    pitch = -0.08;
+    const ground = seat.y != null ? seat.y : floorY(seat.x);
+    // Feet on tier; camera uses EYE_SIT for true seat POV
+    playerRoot.position.set(seat.x, ground, seat.z);
+    yaw.rotation.y = Math.PI / 2; // face screen
+    pitch = -0.05;
     pitchObj.rotation.x = pitch;
-    // Sit pose
-    character.position.y = -0.28;
-    character.rotation.x = 0.35;
-    character.visible = thirdPerson;
+    character.position.set(0, 0, 0);
+    character.rotation.set(0, 0, 0);
+    applyCameraMode(); // forces seated FP POV
     hostEl.querySelector('#mx-seatmap').classList.add('hidden');
     lookChip.classList.add('hidden');
     unlockAudio();
-    hostEl.querySelector('#mx-hint').textContent = 'Seated · WASD / C to stand · Esc for buttons';
+    hostEl.querySelector('#mx-hint').textContent = 'Seat POV · drag to look · WASD / C to stand';
   }
 
   function standUp() {
     if (!sitting) return;
     sitting = false;
-    character.position.y = 0;
-    character.rotation.x = 0;
-    character.visible = thirdPerson;
-    // Step into aisle so we don't spawn inside the seat collider
-    playerRoot.position.z = THREE.MathUtils.clamp(playerRoot.position.z, -0.9, 0.9);
-    if (Math.abs(playerRoot.position.z) < 0.35) playerRoot.position.z = playerRoot.position.z >= 0 ? 0.5 : -0.5;
+    thirdPerson = savedThirdPerson;
+    character.position.set(0, 0, 0);
+    character.rotation.set(0, 0, 0);
+    // Step into nearest aisle so we don't spawn inside the seat collider
+    const aisleTargets = [-0.95, 0.0, 0.95];
+    let best = aisleTargets[0];
+    let bestD = Infinity;
+    for (const z of aisleTargets) {
+      const d = Math.abs(playerRoot.position.z - z);
+      if (d < bestD) {
+        bestD = d;
+        best = z;
+      }
+    }
+    playerRoot.position.z = best;
     collide(playerRoot.position);
     playerRoot.position.y = floorY(playerRoot.position.x);
+    applyCameraMode();
     hostEl.querySelector('#mx-hint').textContent = isTouch
-      ? 'Left stick walk · right drag look'
-      : 'WASD walk · click canvas to look · Esc frees cursor';
+      ? 'Left stick walks · right drag looks'
+      : 'WASD walks anytime · drag canvas to look · Esc frees cursor';
   }
 
   buildSeatMap(hostEl, seatAnchors, (seat) => sitInSeat(seat));
@@ -761,9 +899,14 @@ export async function openMultiplex(
   // ---- UI ----
   viewBtn.onclick = (e) => {
     e.stopPropagation();
+    if (sitting) {
+      // Standing preference for next stand-up; stay in seat POV while seated
+      savedThirdPerson = !savedThirdPerson;
+      viewBtn.textContent = savedThirdPerson ? '👁 Seat→3rd' : '👁 Seat→1st';
+      return;
+    }
     thirdPerson = !thirdPerson;
     applyCameraMode();
-    if (sitting) character.visible = thirdPerson;
   };
   hostEl.querySelector('#mx-dim').onclick = (e) => {
     e.stopPropagation();
@@ -843,7 +986,16 @@ export async function openMultiplex(
     }
 
     const wantMove =
-      looking || isTouch || keys.KeyW || keys.KeyA || keys.KeyS || keys.KeyD || keys.ArrowUp || keys.ArrowDown || keys.ArrowLeft || keys.ArrowRight || touchMove.x || touchMove.y;
+      keys.KeyW ||
+      keys.KeyA ||
+      keys.KeyS ||
+      keys.KeyD ||
+      keys.ArrowUp ||
+      keys.ArrowDown ||
+      keys.ArrowLeft ||
+      keys.ArrowRight ||
+      touchMove.x ||
+      touchMove.y;
 
     if (wantMove && !sitting) {
       forward.set(0, 0, -1).applyQuaternion(yaw.quaternion);
@@ -886,12 +1038,16 @@ export async function openMultiplex(
       standUp();
     }
 
-    playerRoot.position.y = floorY(playerRoot.position.x);
+    // Smooth tier steps — stay grounded, no float/pop
+    if (!sitting) {
+      const targetY = floorY(playerRoot.position.x);
+      playerRoot.position.y += (targetY - playerRoot.position.y) * Math.min(1, 14 * dt);
+    }
 
     if (videoTex && videoEl && !videoEl.paused) videoTex.needsUpdate = true;
     updateSpatial(dt);
 
-    const showNear = nearScreen() && looking && !sitting;
+    const showNear = nearScreen() && !sitting;
     nearWatchBtn.classList.toggle('hidden', !showNear);
 
     const t = now * 0.001;
@@ -1036,11 +1192,39 @@ function buildSeatAnchors() {
   xs.forEach((x, ri) => {
     const seats = [];
     [...zsL, ...zsR].forEach((z, si) => {
-      seats.push({ id: `${labels[ri]}${si + 1}`, x, z, row: labels[ri], num: si + 1 });
+      seats.push({ id: `${labels[ri]}${si + 1}`, x, z, y: null, row: labels[ri], num: si + 1 });
     });
     rows.push({ label: labels[ri], seats });
   });
   return rows;
+}
+
+/** Group live GLB seats into Vantage-style rows for the seat map. */
+function seatsToRows(liveSeats) {
+  const byX = new Map();
+  for (const s of liveSeats) {
+    const key = Math.round(s.x * 4) / 4;
+    if (!byX.has(key)) byX.set(key, []);
+    byX.get(key).push(s);
+  }
+  const xs = [...byX.keys()].sort((a, b) => a - b); // front (screen) first
+  const labels = 'ABCDEFGHIJKLMNOP'.split('');
+  return xs.map((x, ri) => {
+    const seats = byX
+      .get(x)
+      .slice()
+      .sort((a, b) => a.z - b.z)
+      .map((s, si) => ({
+        id: `${labels[ri] || ri}${si + 1}`,
+        x: s.x,
+        y: s.y,
+        z: s.z,
+        sitY: s.sitY,
+        row: labels[ri] || String(ri),
+        num: si + 1,
+      }));
+    return { label: labels[ri] || String(ri), seats };
+  });
 }
 
 function buildSeatMap(hostEl, rows, onPick) {
