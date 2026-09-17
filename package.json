@@ -16,6 +16,7 @@
     "test:moviebox": "node scripts/test-large-moviebox.mjs",
     "emoji:fetch": "node scripts/fetch-emoji-offline.mjs",
     "test:marquee": "node scripts/test-marquee-booths.mjs",
+    "test:playback-sync": "node scripts/test-playback-sync-target.mjs",
     "test:image-target": "node --test src/bot/image-target/__tests__/image-target.test.js"
   },
   "dependencies": {
