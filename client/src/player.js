@@ -54,7 +54,7 @@ export class TheaterPlayer {
     this._converting = false;
     this._lastPlayback = null;
     this._paintTries = 0;
-    this._lastPlayState = null; // Track last applied play state to prevent loops
+    this._lastPlayAttemptAt = 0;
 
     // Critical for Discord iframe / mobile WebViews.
     this.video.playsInline = true;
@@ -278,11 +278,12 @@ export class TheaterPlayer {
     }
     const err = this.video.error;
     const code = err?.code;
-    let detail = 'Could not decode this movie in Discord's browser.';
+    // Double-quoted: apostrophes in these messages broke Vite/Rollup on Railway (PR #18).
+    let detail = "Could not decode this movie in Discord's browser.";
     // Prefer numeric codes — MediaError globals are missing in some embeds/tests.
     if (code === 4 /* MEDIA_ERR_SRC_NOT_SUPPORTED */) {
       detail =
-        'This file's codecs aren't supported here. Re-export as MP4 H.264 video + AAC audio (HandBrake "Fast 1080p30"), or wait for the server convert to finish.';
+        "This file's codecs aren't supported here. Re-export as MP4 H.264 video + AAC audio (HandBrake \"Fast 1080p30\"), or wait for the server convert to finish.";
     } else if (code === 2 /* MEDIA_ERR_NETWORK */) {
       detail = 'Network error loading the stream — keep the host tab open and tap Play again.';
     } else if (code === 3 /* MEDIA_ERR_DECODE */) {
@@ -338,6 +339,11 @@ export class TheaterPlayer {
 
   _tryPlay() {
     const v = this.video;
+    // Debounce: sync ticks + applyState can call this often while play() is pending.
+    // Do not skip forever when paused — Discord autoplay may need a retry.
+    const now = Date.now();
+    if (now - this._lastPlayAttemptAt < 400) return;
+    this._lastPlayAttemptAt = now;
     // Always attempt muted first inside Discord — unmuted autoplay is blocked.
     // Once the viewer has unmuted, never force mute again (fixes mute-until-pause).
     if (!this._started && !this._userUnmuted) {
@@ -509,11 +515,19 @@ export class TheaterPlayer {
     }
 
     // Prefer the true anchor with server-clock skew correction when available.
+    // CRITICAL: main.js re-applies sync.snapshot every 4s. That snapshot's
+    // serverTime/livePosition are frozen. If we set _skewMs from a stale
+    // serverTime, target freezes ~4s behind the playhead and hard-seek yanks
+    // viewers back — the "replay the same segment forever" bug after PR #16.
     if (playback.serverTime != null) {
-      this._skewMs = playback.serverTime - Date.now();
+      const ageMs = Date.now() - playback.serverTime;
+      if (ageMs < 1500) {
+        this._skewMs = playback.serverTime - Date.now();
+      }
     }
     let target;
     if (playback.playing && playback.updatedAt) {
+      // Wall-clock advance from the anchor (works even with a cached snapshot).
       const nowApprox = Date.now() + this._skewMs;
       const elapsed = (nowApprox - playback.updatedAt) / 1000;
       target = (playback.positionAtUpdate ?? 0) + elapsed * (playback.rate || 1);
@@ -526,9 +540,12 @@ export class TheaterPlayer {
     const drift = this.video.currentTime - target;
     const progressive = playback.kind === 'file' || (!playback.hls && !playback.dash);
     const hard = progressive ? DRIFT_HARD_PROGRESSIVE : DRIFT_HARD;
-    const bufferingAhead =
-      this._pendingSeek != null ||
-      (bufferedEnd(this.video) > 0 && target > bufferedEnd(this.video) + SEEK_EDGE_PAD);
+    const bufEnd = bufferedEnd(this.video);
+    const targetPastBuffer = bufEnd > 0 && target > bufEnd + SEEK_EDGE_PAD;
+    // Only treat as "buffering ahead" when the *target* is past the buffer.
+    // A leftover _pendingSeek alone must not permanently disable catch-up seeks
+    // (that left long movies stuck replaying early buffered segments).
+    const bufferingAhead = targetPastBuffer;
 
     this.suppressEvents = true;
     // While under-buffered, play naturally at 1x — do not scrub or rate-chase.
@@ -549,21 +566,12 @@ export class TheaterPlayer {
       this.video.playbackRate = playback.rate || 1;
     }
 
-    // FIX: Prevent play/pause loop by tracking last applied state
-    // Only call _tryPlay() if we're transitioning from paused to playing
-    const needsPlay = playback.playing && this.video.paused;
-    const needsPause = !playback.playing && !this.video.paused;
-    
-    if (needsPlay && this._lastPlayState !== 'playing') {
-      this._lastPlayState = 'playing';
+    // Play/pause from desired state. Debounce lives in _tryPlay — do not gate on
+    // a sticky _lastPlayState (PR #18): that skipped retries while still paused.
+    if (playback.playing && this.video.paused) {
       this._tryPlay();
-    } else if (needsPause && this._lastPlayState !== 'paused') {
-      this._lastPlayState = 'paused';
+    } else if (!playback.playing && !this.video.paused) {
       this.video.pause();
-    } else if (!playback.playing) {
-      this._lastPlayState = 'paused';
-    } else if (playback.playing) {
-      this._lastPlayState = 'playing';
     }
 
     setTimeout(() => (this.suppressEvents = false), 50);
@@ -581,7 +589,7 @@ export class TheaterPlayer {
     this._hadMediaError = false;
     this._awaitingConversion = false;
     this._converting = false;
-    this._lastPlayState = null;
+    this._lastPlayAttemptAt = 0;
     try {
       this.video.pause();
     } catch {
