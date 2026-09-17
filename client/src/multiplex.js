@@ -426,6 +426,7 @@ export async function openMultiplex(
       audioReady = true;
       audioFlag.textContent = '🔊 Spatial Audio';
       audioFlag.classList.add('on');
+      onAudioUnlock?.();
       return true;
     } catch (err) {
       console.warn('audio unlock failed', err);
@@ -881,12 +882,4 @@ function makeLabel(text) {
   const sprite = new THREE.Sprite(mat);
   sprite.scale.set(1.4, 0.35, 1);
   return sprite;
-}
-
-function escapeHtml(s) {
-  return String(s || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
