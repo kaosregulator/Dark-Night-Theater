@@ -542,17 +542,24 @@ export class TheaterPlayer {
     const hard = progressive ? DRIFT_HARD_PROGRESSIVE : DRIFT_HARD;
     const bufEnd = bufferedEnd(this.video);
     const targetPastBuffer = bufEnd > 0 && target > bufEnd + SEEK_EDGE_PAD;
-    // Only treat as "buffering ahead" when the *target* is past the buffer.
-    // A leftover _pendingSeek alone must not permanently disable catch-up seeks
-    // (that left long movies stuck replaying early buffered segments).
-    const bufferingAhead = targetPastBuffer;
+    // Live host upload: bytes arrive behind wall-clock. Chasing the live edge
+    // (pending seeks + rate>1) looks like fast-forward — regression vs PR #15.
+    const liveUpload =
+      playback.feedStatus === 'streaming' ||
+      playback.feedStatus === 'stalled' ||
+      playback.feedStatus === 'disconnected';
 
     this.suppressEvents = true;
-    // While under-buffered, play naturally at 1x — do not scrub or rate-chase.
-    if (bufferingAhead && playback.playing) {
+
+    if (liveUpload) {
       this.video.playbackRate = 1;
-      if (this._pendingSeek == null || Math.abs(this._pendingSeek - target) > 0.5) {
-        this._pendingSeek = target;
+      this._pendingSeek = null;
+    } else if (targetPastBuffer && playback.playing) {
+      // Under-buffered: play at 1×. Do NOT keep moving pendingSeek to the live
+      // edge — that scrub-chases as the buffer grows (same FF symptom).
+      this.video.playbackRate = 1;
+      if (this._pendingSeek == null && (drift < -hard || Number.isNaN(this.video.currentTime))) {
+        this._pendingSeek = Math.min(target, bufEnd > 0 ? bufEnd - SEEK_EDGE_PAD : target);
       }
     } else if (
       (Math.abs(drift) > hard || Number.isNaN(this.video.currentTime)) &&
@@ -560,14 +567,15 @@ export class TheaterPlayer {
     ) {
       this._safeSeek(target);
       this.video.playbackRate = playback.rate || 1;
-    } else if (playback.playing && Math.abs(drift) > DRIFT_SOFT && !bufferingAhead) {
-      this.video.playbackRate = (playback.rate || 1) * (drift > 0 ? 0.96 : 1.04);
+    } else if (playback.playing && Math.abs(drift) > DRIFT_SOFT && !targetPastBuffer) {
+      // Only nudge slower when ahead — never speed up (reads as FF in Discord).
+      const base = playback.rate || 1;
+      this.video.playbackRate = drift > 0 ? base * 0.96 : base;
     } else {
       this.video.playbackRate = playback.rate || 1;
     }
 
-    // Play/pause from desired state. Debounce lives in _tryPlay — do not gate on
-    // a sticky _lastPlayState (PR #18): that skipped retries while still paused.
+    // Play/pause from desired state. Debounce lives in _tryPlay.
     if (playback.playing && this.video.paused) {
       this._tryPlay();
     } else if (!playback.playing && !this.video.paused) {

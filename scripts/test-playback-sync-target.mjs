@@ -100,6 +100,20 @@ const anchor = {
   void badDrift;
 }
 
+// Live upload: chasing wall-clock while buffer lags is the FF bug. Document the
+// intended policy — rate stays 1 and pending catch-up seeks are cleared.
+{
+  const feed = 'streaming';
+  const liveUpload = feed === 'streaming' || feed === 'stalled' || feed === 'disconnected';
+  const wantRate = liveUpload ? 1 : 1.04;
+  if (wantRate !== 1) {
+    console.error('FAIL live upload must lock playbackRate to 1');
+    process.exitCode = 1;
+  } else {
+    console.log('ok  live upload locks rate to 1 (no FF chase)');
+  }
+}
+
 if (process.exitCode) {
   console.error('\nplayback sync target tests FAILED');
   process.exit(1);
