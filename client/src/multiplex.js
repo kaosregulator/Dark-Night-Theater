@@ -328,32 +328,60 @@ export async function openMultiplex(
       loader.load(MODEL_URL, resolve, undefined, reject);
     });
     const root = gltf.scene;
+    const cinemaScreenParts = [];
     root.traverse((obj) => {
       if (!obj.isMesh) return;
       obj.castShadow = false;
       obj.receiveShadow = false;
       const n = (obj.name || '').toLowerCase();
       // Thin poster face panels inside light-boxes
-      if (/poster-light-box.*(?:stand3|wall2)$/.test(n) || /poster-light-box-(?:stand|wall)\d+$/.test(obj.name) && /3$|wall2$/.test(n)) {
+      if (
+        /poster-light-box.*(?:stand3|wall2)$/.test(n) ||
+        (/poster-light-box-(?:stand|wall)\d+$/.test(obj.name) && /3$|wall2$/.test(n))
+      ) {
         posterSlots.push(obj);
+      }
+      // Real projection surface in the CC0 multiplex GLB
+      if (n.includes('cinema-screen-and-masking')) {
+        cinemaScreenParts.push(obj);
       }
     });
     scene.add(root);
 
-    // Dedicated cinema screen facing the seats (+X), at the west wall.
-    const screenW = 7.2;
-    const screenH = 3.9;
+    // Live video plane on the actual cinema screen bounds, nudged toward seats
+    // so it sits in front of the (hidden) GLB screen panels.
+    let screenW = 7.2;
+    let screenH = 3.9;
+    let screenPos = new THREE.Vector3(-13.35, 2.05, -1.0);
+    if (cinemaScreenParts.length) {
+      const box = new THREE.Box3();
+      for (const m of cinemaScreenParts) {
+        m.updateWorldMatrix(true, false);
+        box.expandByObject(m);
+        m.visible = false;
+      }
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      // West-wall screen: width along Z, height along Y.
+      screenW = Math.max(size.z, size.x, 4) * 0.98;
+      screenH = Math.max(size.y, 2.2) * 0.92;
+      screenPos.set(center.x + 0.08, center.y, center.z);
+    }
+
     const geo = new THREE.PlaneGeometry(screenW, screenH);
     screenMat = new THREE.MeshBasicMaterial({
       color: 0x111118,
       toneMapped: false,
+      side: THREE.DoubleSide,
+      depthWrite: true,
     });
     screenMesh = new THREE.Mesh(geo, screenMat);
-    screenMesh.position.set(-13.35, 2.05, -1.0);
+    screenMesh.position.copy(screenPos);
     screenMesh.rotation.y = Math.PI / 2; // face +X (seats)
+    screenMesh.renderOrder = 2;
     scene.add(screenMesh);
     screenGlow.position.copy(screenMesh.position);
-    screenGlow.position.x += 0.4;
+    screenGlow.position.x += 0.45;
 
     // Start camera mid-auditorium looking at screen
     playerObj.position.set(-9.2, floorY(-9.2) + EYE, 0);
