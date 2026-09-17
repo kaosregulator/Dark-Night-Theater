@@ -317,17 +317,22 @@ export async function openMultiplex(
   const ARROW_LOOK = 1.55; // rad/sec
 
   const onKey = (e, down) => {
+    // Always clear on keyup so focus on volume INPUT can't stick WASD on
+    if (!down) {
+      keys[e.code] = false;
+      return;
+    }
     if (e.target && /^(INPUT|TEXTAREA|SELECT)$/i.test(e.target.tagName)) return;
-    keys[e.code] = down;
+    keys[e.code] = true;
     if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
       e.preventDefault();
     }
-    if (down && e.code === 'KeyV') {
+    if (e.code === 'KeyV') {
       thirdPerson = !thirdPerson;
       applyCameraMode();
     }
-    if (down && e.code === 'KeyC' && sitting) standUp();
-    if (down && e.code === 'Escape') {
+    if (e.code === 'KeyC' && sitting) standUp();
+    if (e.code === 'Escape') {
       hostEl.querySelector('#mx-seatmap')?.classList.add('hidden');
       volPanel?.classList.add('hidden');
       setLooking(false);
@@ -397,7 +402,7 @@ export async function openMultiplex(
   };
   document.addEventListener('mousemove', onMouseMove);
 
-  setupTouchControls(hostEl, touchMove, lookDelta, () => {
+  const disposeTouch = setupTouchControls(hostEl, touchMove, lookDelta, () => {
     unlockAudio();
   });
 
@@ -851,6 +856,11 @@ export async function openMultiplex(
   function sitInSeat(seat) {
     setLooking(false);
     dragging = false;
+    walkVel.x = 0;
+    walkVel.y = 0;
+    keys.KeyW = keys.KeyA = keys.KeyS = keys.KeyD = false;
+    touchMove.x = 0;
+    touchMove.y = 0;
     savedThirdPerson = thirdPerson;
     sitting = true;
     const ground = seat.y != null ? seat.y : floorY(seat.x);
@@ -1025,7 +1035,10 @@ export async function openMultiplex(
     walkVel.y = approach(walkVel.y, ty);
 
     const moving = Math.hypot(walkVel.x, walkVel.y) > 0.02;
-    if (sitting && (moving || keys.KeyW || keys.KeyA || keys.KeyS || keys.KeyD || touchMove.x || touchMove.y)) {
+    const keyWalk = keys.KeyW || keys.KeyA || keys.KeyS || keys.KeyD;
+    const stickWalk = touchMove.x || touchMove.y;
+    // Only stand on intentional input — residual walkVel must not eject from a seat
+    if (sitting && (keyWalk || stickWalk)) {
       standUp();
     } else if (moving && !sitting) {
       forward.set(0, 0, -1).applyQuaternion(yaw.quaternion);
@@ -1094,6 +1107,7 @@ export async function openMultiplex(
     window.removeEventListener('keyup', keyUp);
     document.removeEventListener('pointerlockchange', onPointerLock);
     document.removeEventListener('mousemove', onMouseMove);
+    disposeTouch?.();
     if (document.pointerLockElement === canvas) document.exitPointerLock?.();
     if (videoTex) {
       videoTex.dispose();
@@ -1281,7 +1295,7 @@ function setupTouchControls(hostEl, touchMove, lookDelta, onGesture) {
   const stick = hostEl.querySelector('#mx-stick');
   const knob = hostEl.querySelector('#mx-knob');
   const look = hostEl.querySelector('#mx-lookzone');
-  if (!stick || !look) return;
+  if (!stick || !look) return () => {};
 
   // DN Cards–style pointer joystick (works in Discord iframes / iOS WebViews)
   let joyId = null;
@@ -1368,6 +1382,13 @@ function setupTouchControls(hostEl, touchMove, lookDelta, onGesture) {
   };
   look.addEventListener('pointerup', endLook);
   look.addEventListener('pointercancel', endLook);
+
+  return () => {
+    window.removeEventListener('pointerup', winUp);
+    window.removeEventListener('pointercancel', winUp);
+    window.removeEventListener('blur', resetJoy);
+    resetJoy();
+  };
 }
 
 function makeLabel(text) {
