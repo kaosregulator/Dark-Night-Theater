@@ -147,8 +147,18 @@ host.post('/api/host/session', express.json(), async (req, res) => {
       webPlayable: session.webPlayable !== false,
       converting: Boolean(session.converting),
       codecTip: session.codecTip || null,
+      posterUrl: req.body?.posterUrl ? String(req.body.posterUrl).slice(0, 800) : null,
+      description: req.body?.description ? String(req.body.description).slice(0, 800) : null,
     };
-    const video = { uid: session.id, name: req.body?.title ? String(req.body.title) : session.name, category: req.body?.category || 'Now Playing' };
+    const title = req.body?.title ? String(req.body.title).slice(0, 160) : null;
+    const video = {
+      uid: session.id,
+      name: title || session.name,
+      category: req.body?.category || 'Now Playing',
+      description: playback.description || '',
+      posterUrl: playback.posterUrl,
+      thumbnail: playback.posterUrl || '',
+    };
     sessions.startClanMovie(s.voiceChannelId, { hostId: s.userId, guildId: s.guildId, video, playback });
     const voice = await client.channels.fetch(s.voiceChannelId).catch(() => null);
     const text = s.textChannelId ? await client.channels.fetch(s.textChannelId).catch(() => null) : null;
@@ -157,7 +167,7 @@ host.post('/api/host/session', express.json(), async (req, res) => {
     res.json({
       ok: true,
       sessionId: session.id,
-      name: session.name,
+      name: video.name,
       activityUrl,
       webPlayable: session.webPlayable !== false,
       converting: Boolean(session.converting),
@@ -170,6 +180,70 @@ host.post('/api/host/session', express.json(), async (req, res) => {
     log.warn('host session start:', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// Optional now-playing poster image for the multiplex light-boxes.
+host.put('/api/host/session/:id/poster', (req, res) => {
+  const s = sessionFrom(req);
+  if (!s) return res.status(401).json({ error: 'Not authorised' });
+  const session = temp.find(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  if (session.channelId && s.voiceChannelId && session.channelId !== s.voiceChannelId) {
+    return res.status(403).json({ error: 'Wrong channel' });
+  }
+  const ext = String(req.query.ext || '.jpg').toLowerCase();
+  const safeExt = ['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(ext) ? ext : '.jpg';
+  const dest = path.join(path.dirname(session.file), `${session.id}.poster${safeExt}`);
+  const out = fs.createWriteStream(dest);
+  let bytes = 0;
+  let aborted = false;
+  const maxBytes = 8 * 1024 * 1024;
+  req.on('data', (chunk) => {
+    bytes += chunk.length;
+    if (bytes > maxBytes && !aborted) {
+      aborted = true;
+      req.destroy();
+      out.destroy();
+      fs.rm(dest, { force: true }, () => {});
+      res.status(413).json({ error: 'Poster too large (> 8 MB).' });
+    }
+  });
+  req.pipe(out);
+  out.on('finish', () => {
+    if (aborted) return;
+    session.posterFile = dest;
+    const posterUrl = `/tmedia/${session.id}/poster`;
+    if (session.channelId) {
+      sessions.setPlaybackMeta(session.channelId, { posterUrl });
+    }
+    res.json({ ok: true, posterUrl });
+  });
+  out.on('error', (err) => {
+    if (aborted) return;
+    log.warn('poster write error:', err.message);
+    res.status(500).json({ error: 'Write failed' });
+  });
+});
+
+// Update title / description / poster URL after the party has started.
+host.post('/api/host/session/:id/meta', express.json(), (req, res) => {
+  const s = sessionFrom(req);
+  if (!s) return res.status(401).json({ error: 'Not authorised' });
+  const session = temp.find(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  if (session.channelId && s.voiceChannelId && session.channelId !== s.voiceChannelId) {
+    return res.status(403).json({ error: 'Wrong channel' });
+  }
+  if (req.body?.title) session.name = String(req.body.title).slice(0, 160);
+  if ('description' in (req.body || {})) session.description = req.body.description ? String(req.body.description).slice(0, 800) : '';
+  if (session.channelId) {
+    const patch = {};
+    if (req.body?.title) patch.videoName = req.body.title;
+    if ('description' in (req.body || {})) patch.description = req.body.description;
+    if (req.body?.posterUrl) patch.posterUrl = req.body.posterUrl;
+    if (Object.keys(patch).length) sessions.setPlaybackMeta(session.channelId, patch);
+  }
+  res.json({ ok: true });
 });
 
 // Where a resumable upload should continue from (the host page polls this after
@@ -313,8 +387,14 @@ export function hostPage() {
   <h1>🎬 Host a Movie</h1>
   <p id="mode">Add a video from this device. Best format: <b>MP4 (H.264 video + AAC audio)</b> or WebM. Even resolution (e.g. 1920×1080). Won’t play in browsers: <code>${nonWeb}</code>. MovieBox / “Pro” rips are often <b>H.265</b> — those show a black screen in Discord.</p>
   <div id="keywrap"><label>Admin key</label><input type="password" id="key" placeholder="HOST_ADMIN_KEY (or SESSION_SECRET)"/></div>
+  <label>Movie title (optional)</label>
+  <input type="text" id="title" placeholder="Now Playing title"/>
+  <label>Short description (optional)</label>
+  <input type="text" id="desc" placeholder="One-line blurb for the marquee / multiplex"/>
   <label>Category (optional)</label>
   <input type="text" id="cat" placeholder="Library" value="Library"/>
+  <label>Poster image (optional — shows in the 3D multiplex)</label>
+  <input type="file" id="poster" accept="image/*"/>
   <div class="drop" id="drop">📁 Click or drop a video file here</div>
   <input type="file" id="file" accept="video/*" style="display:none"/>
   <div class="bar" id="barwrap"><i id="bar"></i></div>
@@ -367,13 +447,27 @@ var SID=null, FILE=null, hostMsg='', retries=0;
 async function hostSession(f){
   setStatus('Setting up your theater…');
   let meta={};
+  const title=($('#title').value||'').trim();
+  const description=($('#desc').value||'').trim();
   try{
     meta=await fetch('/api/host/session',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({s:S,name:f.name,size:f.size,category:$('#cat').value||'Now Playing'})}).then(r=>r.json());
+      body:JSON.stringify({s:S,name:f.name,size:f.size,category:$('#cat').value||'Now Playing',title:title||undefined,description:description||undefined})}).then(r=>r.json());
   }catch{ setStatus('⚠️ Could not reach the bot.'); return; }
   if(!meta.ok){ setStatus('⚠️ '+(meta.message||meta.error||'Could not start the party')); return; }
   SID=meta.sessionId; FILE=f; retries=0;
-  hostMsg='🎉 <b>Party started</b> — “'+meta.name+'”! Prefer launching from Discord: voice channel → <b>Activities</b> → DarkNight (same window). <b>Keep this tab open</b> while it streams.';
+  // Upload poster (if any) so multiplex light-boxes show the art.
+  const poster=$('#poster').files&&$('#poster').files[0];
+  if(poster){
+    try{
+      const ext=(poster.name.match(/\\.[a-z0-9]+$/i)||['.jpg'])[0].toLowerCase();
+      await fetch('/api/host/session/'+SID+'/poster?s='+encodeURIComponent(S)+'&ext='+encodeURIComponent(ext),{method:'PUT',body:poster,headers:{'Content-Type':poster.type||'application/octet-stream'}});
+    }catch{}
+  } else if(title||description){
+    try{
+      await fetch('/api/host/session/'+SID+'/meta?s='+encodeURIComponent(S),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({s:S,title:title||undefined,description:description||undefined})});
+    }catch{}
+  }
+  hostMsg='🎉 <b>Party started</b> — “'+(title||meta.name)+'”! Prefer launching from Discord: voice channel → <b>Activities</b> → DarkNight (same window). <b>Keep this tab open</b> while it streams.';
   if(meta.activityUrl) hostMsg+='<br><a class="open" href="'+meta.activityUrl+'" target="_blank" rel="noopener">▶ Open Theater invite</a> <small>(invite links may open another Discord window — that’s Discord, not a bug)</small>';
   if(meta.converting || meta.suspectConvert){
     hostMsg+='<br><small>🛡️ MovieBox/large file detected — Discord playback is <b>held</b> until a safe HLS stream is ready (avoids the black screen). Upload finishes first, then the first segments unlock the Theater.</small>';

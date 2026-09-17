@@ -343,6 +343,25 @@ export class TheaterUI {
     if (this._multiplex?.setParticipants) {
       this._multiplex.setParticipants(snap.participants || []);
     }
+    if (this._multiplex) {
+      const pb = snap.playback || {};
+      this._multiplex.setMovieTitle?.(pb.videoName || '');
+      const poster = pb.posterUrl || pb.thumbnail || null;
+      if (poster !== this._mxPosterUrl) {
+        this._mxPosterUrl = poster;
+        this._multiplex.setPoster?.(poster);
+      }
+      // Same <video> element — re-fit when the shared movie changes.
+      if (pb.videoUid && pb.videoUid !== this._mxVideoUid) {
+        this._mxVideoUid = pb.videoUid;
+        this._multiplex.refreshVideo?.();
+      } else if (!this._mxVideoUid && pb.videoUid) {
+        this._mxVideoUid = pb.videoUid;
+      }
+    } else {
+      this._mxVideoUid = snap.playback?.videoUid || null;
+      this._mxPosterUrl = snap.playback?.posterUrl || snap.playback?.thumbnail || null;
+    }
 
     const p = snap.playback || {};
     const isHost = snap.hostId && snap.hostId === this.me?.id;
@@ -1067,10 +1086,15 @@ export class TheaterUI {
     this.root.querySelector('#btn-multiplex')?.classList.add('active');
     this.toast('🏛 Entering the multiplex…');
     try {
+      const p = this.state?.playback || {};
       const { openMultiplex } = await import('./multiplex.js');
       this._multiplex = await openMultiplex(host, {
         participants: this.state?.participants || [],
         meId: this.me?.id,
+        // Same <video> the 2D theater uses — preserves position & sync.
+        videoEl: this.videoEl,
+        posterUrl: p.posterUrl || p.thumbnail || null,
+        movieTitle: p.videoName || '',
         onClose: () => {
           this._multiplex = null;
           this.root.querySelector('#btn-multiplex')?.classList.remove('active');
@@ -1082,7 +1106,10 @@ export class TheaterUI {
           if (zoom) this.setCinemaFullscreen(true);
           this.toast(zoom ? '▶ Zooming to the picture' : '▶ Back to the screen');
         },
+        onAudioUnlock: () => this.emit('theater-audio'),
       });
+      this._mxVideoUid = p.videoUid || null;
+      this._mxPosterUrl = p.posterUrl || p.thumbnail || null;
     } catch (err) {
       this.root.querySelector('#btn-multiplex')?.classList.remove('active');
       this.toast('⚠️ Could not open multiplex: ' + (err?.message || 'load failed'));
