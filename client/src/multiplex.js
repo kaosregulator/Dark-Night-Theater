@@ -191,7 +191,8 @@ export async function openMultiplex(
   scene.add(screenGlow);
 
   const controls = new PointerLockControls(camera, canvas);
-  scene.add(controls.getObject());
+  const playerObj = controls.object || controls.getObject();
+  scene.add(playerObj);
 
   const keys = Object.create(null);
   const touchMove = { x: 0, y: 0 };
@@ -355,7 +356,7 @@ export async function openMultiplex(
     screenGlow.position.x += 0.4;
 
     // Start camera mid-auditorium looking at screen
-    controls.getObject().position.set(-9.2, floorY(-9.2) + EYE, 0);
+    playerObj.position.set(-9.2, floorY(-9.2) + EYE, 0);
 
     // Apply host poster if provided
     applyPosters(posterSlots, posterUrl);
@@ -444,7 +445,7 @@ export async function openMultiplex(
     const audio = sharedAudio;
     if (!audio?.unlocked || !screenMesh) return;
     const listener = audio.ctx.listener;
-    const cam = controls.getObject();
+    const cam = playerObj;
     const sp = screenMesh.position;
     // Listener = camera
     if (listener.positionX) {
@@ -498,7 +499,7 @@ export async function openMultiplex(
   buildSeatMap(hostEl, seatAnchors, (seat) => {
     // Fly / teleport into seat view
     controls.unlock();
-    controls.getObject().position.set(seat.x, floorY(seat.x) + EYE * 0.85, seat.z);
+    playerObj.position.set(seat.x, floorY(seat.x) + EYE * 0.85, seat.z);
     // Look toward screen
     camera.lookAt(screenMesh?.position || new THREE.Vector3(-13, 2, -1));
     pitch = 0;
@@ -524,7 +525,10 @@ export async function openMultiplex(
     volVal.textContent = `${volSlider.value}%`;
   };
   hostEl.querySelector('#mx-seats').onclick = () => {
-    hostEl.querySelector('#mx-seatmap').classList.toggle('hidden');
+    const map = hostEl.querySelector('#mx-seatmap');
+    const opening = map.classList.contains('hidden');
+    if (opening) controls.unlock();
+    map.classList.toggle('hidden');
   };
   hostEl.querySelector('#mx-seatmap-close').onclick = () => {
     hostEl.querySelector('#mx-seatmap').classList.add('hidden');
@@ -546,7 +550,7 @@ export async function openMultiplex(
 
   function nearScreen() {
     if (!screenMesh) return false;
-    return controls.getObject().position.distanceTo(screenMesh.position) < 7.5;
+    return playerObj.position.distanceTo(screenMesh.position) < 7.5;
   }
 
   // ---- Frame loop ----
@@ -563,7 +567,7 @@ export async function openMultiplex(
 
     // Look (touch)
     if (isTouch && (lookDelta.x || lookDelta.y)) {
-      const obj = controls.getObject();
+      const obj = playerObj;
       obj.rotation.y -= lookDelta.x * 0.0035;
       pitch = THREE.MathUtils.clamp(pitch - lookDelta.y * 0.0028, -1.2, 1.2);
       camera.rotation.x = pitch;
@@ -573,10 +577,10 @@ export async function openMultiplex(
 
     const moving = controls.isLocked || isTouch;
     if (moving) {
-      forward.set(0, 0, -1).applyQuaternion(controls.getObject().quaternion);
+      forward.set(0, 0, -1).applyQuaternion(playerObj.quaternion);
       forward.y = 0;
       forward.normalize();
-      right.set(1, 0, 0).applyQuaternion(controls.getObject().quaternion);
+      right.set(1, 0, 0).applyQuaternion(playerObj.quaternion);
       right.y = 0;
       right.normalize();
       dir.set(0, 0, 0);
@@ -591,12 +595,12 @@ export async function openMultiplex(
       }
       if (dir.lengthSq() > 0) {
         dir.normalize().multiplyScalar(SPEED * dt);
-        const p = controls.getObject().position;
+        const p = playerObj.position;
         p.add(dir);
         collide(p);
         p.y = floorY(p.x) + EYE;
       } else {
-        const p = controls.getObject().position;
+        const p = playerObj.position;
         p.y = floorY(p.x) + EYE;
       }
     }
