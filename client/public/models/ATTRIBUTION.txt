@@ -1,0 +1,4 @@
+Cinema Multiplex Floor (Cinema Multiplex and Foyer)
+Source: https://3dassets.dev/assets/cinema-multiplex-and-foyer-cinema-multip-2527aaf9-starter-scene
+Model: https://cdn.3dassets.dev/assets/34689/v1/model.glb
+Licence: CC0 1.0 Universal

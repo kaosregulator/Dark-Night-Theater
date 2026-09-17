@@ -69,10 +69,12 @@ export class TheaterUI {
           </div>
           <div class="topbar-actions">
             <button class="btn" id="btn-fx" title="Toggle screen animations">✨</button>
-            <button class="btn" id="btn-aspect" title="Aspect ratio">⬚</button>
+            <button class="btn" id="btn-aspect" title="Aspect ratio">▣</button>
+            <button class="btn" id="btn-multiplex" title="Explore the multiplex (3D foyer)">🏛</button>
+            <button class="btn" id="btn-react" title="Reactions">😀</button>
             <button class="btn" id="btn-concession" title="Concession stand mini-game">🍿</button>
             <button class="btn" id="btn-menu" title="Main menu">🏠</button>
-            <button class="btn" id="btn-fullscreen" title="Fullscreen">⛶</button>
+            <button class="btn" id="btn-fullscreen" title="Fullscreen picture">⛶</button>
             <button class="btn" id="btn-lobby">🎞️ Movies</button>
           </div>
         </header>
@@ -101,30 +103,38 @@ export class TheaterUI {
                   <button type="button" class="btn primary" id="snack-play-conc">🎮 Play Concession</button>
                 </div>
               </div>
+            <button type="button" class="fs-exit hidden" id="fs-exit" title="Exit fullscreen">✕</button>
           </div>
-          <div class="react-rail" id="ghost-reacts">
-            ${REACTS.map(
-              (r) =>
-                `<button class="ghost-react" data-react="${r.key}" title="${r.title}">${r.emoji}</button>`
-            ).join('')}
-          </div>
+          <aside class="react-drawer" id="react-drawer" hidden>
+            <div class="react-drawer-head">Reacts</div>
+            <div class="react-drawer-grid" id="ghost-reacts">
+              ${REACTS.map(
+                (r) =>
+                  `<button class="ghost-react" data-react="${r.key}" title="${r.title}">${r.emoji}</button>`
+              ).join('')}
+            </div>
+          </aside>
           <div class="now-playing" id="now-playing"></div>
           <div class="feed-note hidden" id="feed-note"></div>
         </section>
 
         <section class="controls" id="controls"></section>
 
-        <section class="floor">
-          <div class="seats" id="seats"></div>
+        <section class="floor collapsed" id="floor">
+          <button type="button" class="floor-toggle btn" id="btn-floor" title="Show seats">🪑 Seats</button>
+          <div class="floor-body">
+            <div class="seats" id="seats"></div>
+          </div>
         </section>
 
-        <section class="social" id="social"></section>
+        <section class="social collapsed" id="social"></section>
 
         <div class="lobby hidden" id="lobby"></div>
         <div class="foyer hidden" id="foyer"></div>
         <div class="join-flow hidden" id="join-flow"></div>
         <div class="intro hidden" id="intro"></div>
         <div class="main-menu hidden" id="main-menu"></div>
+        <div class="multiplex-host hidden" id="multiplex-host"></div>
         <div class="concession-dock hidden" id="concession-dock"></div>
         <div class="toasts" id="toasts"></div>
         <div class="float-layer" id="float-layer"></div>
@@ -135,16 +145,26 @@ export class TheaterUI {
     this.root.querySelector('#btn-lobby').onclick = () => this.toggleLobby();
     this.root.querySelector('#btn-menu').onclick = () => this.emit('open-menu');
     this.root.querySelector('#btn-fullscreen').onclick = () => this.toggleFullscreen();
+    this.root.querySelector('#fs-exit')?.addEventListener('click', () => {
+      if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+      this.setCinemaFullscreen(false);
+    });
     this.root.querySelector('#btn-fx').onclick = () => this.toggleFx();
     this.root.querySelector('#btn-aspect').onclick = () => this.cycleAspect();
+    this.root.querySelector('#btn-react').onclick = () => this.toggleReactDrawer();
+    this.root.querySelector('#btn-multiplex').onclick = () => this.toggleMultiplex();
     this.root.querySelector('#btn-concession').onclick = () => this.toggleConcession();
+    this.root.querySelector('#btn-floor')?.addEventListener('click', () => this.toggleFloor());
     this.root.querySelector('#snack-play-conc')?.addEventListener('click', () => this.toggleConcession(true));
     this.root.querySelectorAll('.ghost-react').forEach((b) => {
       b.onclick = () => {
         this.emit('react', { kind: b.dataset.react });
         this.floatReact(b.dataset.react);
+        this.root.querySelector('#react-drawer').hidden = true;
+        this.root.querySelector('#btn-react')?.classList.remove('active');
       };
     });
+    this.videoEl?.addEventListener('loadedmetadata', () => this._fitScreenToVideo());
     document.addEventListener('fullscreenchange', () => this._syncFsButton());
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && this._cinemaFs && !document.fullscreenElement) {
@@ -208,7 +228,8 @@ export class TheaterUI {
       strip = document.createElement('div');
       strip.id = 'standing';
       strip.className = 'standing';
-      this.root.querySelector('.floor').prepend(strip);
+      this.root.querySelector('.floor-body')?.prepend(strip) ||
+        this.root.querySelector('.floor')?.prepend(strip);
     }
     const bits = [];
     if (standing.length) {
@@ -319,10 +340,18 @@ export class TheaterUI {
 
     this.updateSeats();
     this.renderMarquee();
+    if (this._multiplex?.setParticipants) {
+      this._multiplex.setParticipants(snap.participants || []);
+    }
 
     const p = snap.playback || {};
     const isHost = snap.hostId && snap.hostId === this.me?.id;
     const canControl = inside && (isHost || !p.locked || !snap.hostId);
+
+    // Give the picture the viewport — collapse seats chrome while a movie is up.
+    const hasMovie = Boolean(inside && p.videoUid && this.mode !== 'private');
+    this.root.querySelector('.stage')?.classList.toggle('watching', hasMovie);
+    if (hasMovie) this._fitScreenToVideo();
 
     // Now playing + screen empty state (only meaningful when inside).
     const np = this.root.querySelector('#now-playing');
@@ -940,9 +969,7 @@ export class TheaterUI {
 
   // ---- Fullscreen (native + cinema fallback for Discord iframe) ------------
   toggleFullscreen() {
-    // Prefer native Fullscreen API when the Discord Activity allows it.
-    // Many Discord clients block it — fall back to CSS "cinema" mode that
-    // fills the Activity viewport (hides seats/chrome, expands the screen).
+    // Picture-only: no curtains, reacts, seats, or bezels — just the film.
     const frame =
       this.root.querySelector('#theater-screen') ||
       this.root.querySelector('.screen') ||
@@ -959,39 +986,28 @@ export class TheaterUI {
       return;
     }
 
-    const req =
-      frame.requestFullscreen?.bind(frame) ||
-      frame.webkitRequestFullscreen?.bind(frame) ||
-      frame.webkitRequestFullScreen?.bind(frame);
-    const video = this.videoEl;
-    const iosReq = video?.webkitEnterFullscreen?.bind(video);
-
-    if (req) {
-      Promise.resolve(req())
-        .then(() => this._syncFsButton())
-        .catch(() => {
-          // Discord iframe often rejects — cinema mode still works.
-          this.setCinemaFullscreen(true);
-          this.toast('Cinema mode on (Discord blocks native fullscreen)');
-        });
-      return;
-    }
-    if (iosReq) {
-      try {
-        iosReq();
-        return;
-      } catch {
-        /* fall through */
-      }
-    }
+    // Prefer CSS cinema mode in Discord (Fullscreen API is often blocked and
+    // would only FS the frame with bezels). Cinema mode = edge-to-edge picture.
     this.setCinemaFullscreen(true);
-    this.toast('Cinema mode on');
+    const req =
+      document.documentElement.requestFullscreen?.bind(document.documentElement) ||
+      document.documentElement.webkitRequestFullscreen?.bind(document.documentElement);
+    if (req) {
+      Promise.resolve(req()).catch(() => {
+        /* Discord iframe — CSS cinema mode already on */
+      });
+    }
   }
 
   setCinemaFullscreen(on) {
     this._cinemaFs = Boolean(on);
     this.root.querySelector('.stage')?.classList.toggle('cinema-fs', this._cinemaFs);
     document.body.classList.toggle('cinema-fs', this._cinemaFs);
+    this.root.querySelector('#fs-exit')?.classList.toggle('hidden', !this._cinemaFs);
+    if (this._cinemaFs) {
+      this.root.querySelector('#react-drawer').hidden = true;
+      this.root.querySelector('#btn-react')?.classList.remove('active');
+    }
     this._syncFsButton();
   }
 
@@ -999,9 +1015,78 @@ export class TheaterUI {
     const btn = this.root.querySelector('#btn-fullscreen');
     if (!btn) return;
     const on = Boolean(document.fullscreenElement) || this._cinemaFs;
-    btn.textContent = on ? '⛶' : '⛶';
     btn.classList.toggle('active', on);
-    btn.title = on ? 'Exit fullscreen' : 'Fullscreen';
+    btn.title = on ? 'Exit fullscreen' : 'Fullscreen picture';
+    this.root.querySelector('#fs-exit')?.classList.toggle('hidden', !on);
+  }
+
+  _fitScreenToVideo() {
+    const v = this.videoEl;
+    const screen = this.root.querySelector('#theater-screen');
+    if (!v || !screen || this._cinemaFs) return;
+    const mode = prefs.aspectMode || 'cover';
+    if (mode === 'cinema43') {
+      screen.style.aspectRatio = '4 / 3';
+      return;
+    }
+    if (mode === 'adapt' || mode === 'cover' || mode === 'stretch') {
+      // Size the house screen to the film so we don't letterbox inside the frame.
+      if (v.videoWidth > 0 && v.videoHeight > 0) {
+        screen.style.aspectRatio = `${v.videoWidth} / ${v.videoHeight}`;
+      } else {
+        screen.style.aspectRatio = '16 / 9';
+      }
+    }
+  }
+
+  toggleReactDrawer() {
+    const drawer = this.root.querySelector('#react-drawer');
+    if (!drawer) return;
+    drawer.hidden = !drawer.hidden;
+    this.root.querySelector('#btn-react')?.classList.toggle('active', !drawer.hidden);
+  }
+
+  toggleFloor() {
+    const floor = this.root.querySelector('#floor');
+    const social = this.root.querySelector('#social');
+    const open = floor?.classList.toggle('collapsed') === false;
+    social?.classList.toggle('collapsed', !open);
+    const btn = this.root.querySelector('#btn-floor');
+    if (btn) btn.textContent = open ? '🪑 Hide seats' : '🪑 Seats';
+  }
+
+  async toggleMultiplex() {
+    const host = this.root.querySelector('#multiplex-host');
+    if (!host) return;
+    if (this._multiplex) {
+      this._multiplex.destroy();
+      this._multiplex = null;
+      this.root.querySelector('#btn-multiplex')?.classList.remove('active');
+      return;
+    }
+    this.root.querySelector('#btn-multiplex')?.classList.add('active');
+    this.toast('🏛 Entering the multiplex…');
+    try {
+      const { openMultiplex } = await import('./multiplex.js');
+      this._multiplex = await openMultiplex(host, {
+        participants: this.state?.participants || [],
+        meId: this.me?.id,
+        onClose: () => {
+          this._multiplex = null;
+          this.root.querySelector('#btn-multiplex')?.classList.remove('active');
+        },
+        onWatch: ({ zoom } = {}) => {
+          this._multiplex?.destroy();
+          this._multiplex = null;
+          this.root.querySelector('#btn-multiplex')?.classList.remove('active');
+          if (zoom) this.setCinemaFullscreen(true);
+          this.toast(zoom ? '▶ Zooming to the picture' : '▶ Back to the screen');
+        },
+      });
+    } catch (err) {
+      this.root.querySelector('#btn-multiplex')?.classList.remove('active');
+      this.toast('⚠️ Could not open multiplex: ' + (err?.message || 'load failed'));
+    }
   }
 
   // ---- Screen FX toggle ----------------------------------------------------
@@ -1037,6 +1122,8 @@ export class TheaterUI {
             ? 'aspect-adapt'
             : 'aspect-cover';
     screen.classList.add(cls);
+    screen.style.aspectRatio = mode === 'cinema43' ? '4 / 3' : '';
+    this._fitScreenToVideo();
     const btn = this.root.querySelector('#btn-aspect');
     if (btn) {
       btn.title =
