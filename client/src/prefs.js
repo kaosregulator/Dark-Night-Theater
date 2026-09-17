@@ -7,10 +7,8 @@ const defaults = {
   fxEnabled: true,
   /** Last concession high score (local) */
   concessionBest: 0,
-  /** Screen fit: adapt | stretch | cinema43 */
-  aspectMode: 'adapt',
-  /** Immersive seat POV when watching */
-  seatPov: true,
+  /** Screen fit: cover (fill) | adapt (letterbox) | stretch | cinema43 */
+  aspectMode: 'cover',
 };
 
 function read() {
@@ -49,17 +47,20 @@ export const prefs = {
     return best;
   },
   get aspectMode() {
-    const m = read().aspectMode;
-    return m === 'stretch' || m === 'cinema43' ? m : 'adapt';
+    const raw = read();
+    // One-shot: old default "adapt" letterboxed over the theater house.
+    if (!raw.aspectMigratedV2) {
+      const next =
+        raw.aspectMode === 'stretch' || raw.aspectMode === 'cinema43' ? raw.aspectMode : 'cover';
+      write({ aspectMode: next, aspectMigratedV2: true });
+      return next;
+    }
+    const m = raw.aspectMode;
+    if (m === 'stretch' || m === 'cinema43' || m === 'adapt' || m === 'cover') return m;
+    return 'cover';
   },
   setAspectMode(mode) {
-    const m = mode === 'stretch' || mode === 'cinema43' ? mode : 'adapt';
-    return write({ aspectMode: m });
-  },
-  get seatPov() {
-    return read().seatPov !== false;
-  },
-  setSeatPov(on) {
-    return write({ seatPov: Boolean(on) });
+    const allowed = new Set(['cover', 'adapt', 'stretch', 'cinema43']);
+    return write({ aspectMode: allowed.has(mode) ? mode : 'cover', aspectMigratedV2: true });
   },
 };

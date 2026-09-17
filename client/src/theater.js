@@ -69,7 +69,6 @@ export class TheaterUI {
           </div>
           <div class="topbar-actions">
             <button class="btn" id="btn-fx" title="Toggle screen animations">✨</button>
-            <button class="btn" id="btn-pov" title="Seat POV / screen-only">🪑</button>
             <button class="btn" id="btn-aspect" title="Aspect ratio">⬚</button>
             <button class="btn" id="btn-concession" title="Concession stand mini-game">🍿</button>
             <button class="btn" id="btn-menu" title="Main menu">🏠</button>
@@ -79,20 +78,13 @@ export class TheaterUI {
         </header>
 
         <section class="screen-wrap">
+          <div class="house-ambient" aria-hidden="true"></div>
           <div class="curtain left"></div>
           <div class="curtain right"></div>
           <div class="beam"></div>
-          <div class="screen aspect-adapt" id="theater-screen">
+          <div class="screen aspect-cover" id="theater-screen">
             <div class="screen-frame" aria-hidden="true"></div>
             <video id="theater-video" playsinline webkit-playsinline></video>
-            <div class="seat-pov" id="seat-pov" hidden>
-              <div class="seat-pov-rail"></div>
-              <div class="cupholders">
-                <div class="cupholder left"><span class="cup-drink" id="pov-drink-l"></span></div>
-                <div class="cupholder right"><span class="cup-drink" id="pov-drink-r"></span></div>
-              </div>
-              <div class="seat-pov-hint">You’re seated · popcorn in the holders · enjoy the show</div>
-            </div>
             <div class="screen-empty" id="screen-empty">
               <div class="screen-empty-inner">
                 <div class="pop">🍿</div>
@@ -109,12 +101,12 @@ export class TheaterUI {
                   <button type="button" class="btn primary" id="snack-play-conc">🎮 Play Concession</button>
                 </div>
               </div>
-              <div class="ghost-reacts" id="ghost-reacts">
-                ${REACTS.map(
-                  (r) =>
-                    `<button class="ghost-react" data-react="${r.key}" title="${r.title}">${r.emoji}</button>`
-                ).join('')}
-              </div>
+          </div>
+          <div class="react-rail" id="ghost-reacts">
+            ${REACTS.map(
+              (r) =>
+                `<button class="ghost-react" data-react="${r.key}" title="${r.title}">${r.emoji}</button>`
+            ).join('')}
           </div>
           <div class="now-playing" id="now-playing"></div>
           <div class="feed-note hidden" id="feed-note"></div>
@@ -144,7 +136,6 @@ export class TheaterUI {
     this.root.querySelector('#btn-menu').onclick = () => this.emit('open-menu');
     this.root.querySelector('#btn-fullscreen').onclick = () => this.toggleFullscreen();
     this.root.querySelector('#btn-fx').onclick = () => this.toggleFx();
-    this.root.querySelector('#btn-pov').onclick = () => this.toggleSeatPov();
     this.root.querySelector('#btn-aspect').onclick = () => this.cycleAspect();
     this.root.querySelector('#btn-concession').onclick = () => this.toggleConcession();
     this.root.querySelector('#snack-play-conc')?.addEventListener('click', () => this.toggleConcession(true));
@@ -162,7 +153,6 @@ export class TheaterUI {
     });
     this.applyFxPref();
     this.applyAspectPref();
-    this.applySeatPovPref();
     this.renderSeats();
     this.renderSocial();
     this.renderControls();
@@ -202,12 +192,10 @@ export class TheaterUI {
         el.classList.add('occupied');
         el.classList.toggle('me', p.id === this.me?.id);
         const items = (p.items || []).map((i) => ITEMS.find((x) => x.key === i)?.emoji || '').join('');
-        const hasDrink = (p.items || []).some((i) => i === 'soda' || i === 'popcorn' || i === 'candy');
         el.innerHTML = `
           <img src="${p.avatar || ''}" alt="" onerror="this.style.display='none'"/>
           <span class="seat-name">${escapeHtml(p.name)}</span>
-          ${items ? `<span class="seat-items">${items}</span>` : ''}
-          <span class="seat-cupholder ${hasDrink ? 'filled' : ''}" title="Cup holder">${hasDrink ? items || '🥤' : '🪑'}</span>`;
+          ${items ? `<span class="seat-items">${items}</span>` : ''}`;
       } else {
         el.classList.remove('occupied', 'me');
         el.innerHTML = '🪑';
@@ -330,7 +318,6 @@ export class TheaterUI {
     if (snack) snack.classList.toggle('hidden', !(inside && snap.snackBreak));
 
     this.updateSeats();
-    this.refreshPovDrinks();
     this.renderMarquee();
 
     const p = snap.playback || {};
@@ -1037,13 +1024,19 @@ export class TheaterUI {
   }
 
   applyAspectPref() {
-    const mode = prefs.aspectMode || 'adapt';
+    const mode = prefs.aspectMode || 'cover';
     const screen = this.root.querySelector('#theater-screen');
     if (!screen) return;
-    screen.classList.remove('aspect-adapt', 'aspect-stretch', 'aspect-cinema43');
-    screen.classList.add(
-      mode === 'stretch' ? 'aspect-stretch' : mode === 'cinema43' ? 'aspect-cinema43' : 'aspect-adapt'
-    );
+    screen.classList.remove('aspect-cover', 'aspect-adapt', 'aspect-stretch', 'aspect-cinema43');
+    const cls =
+      mode === 'stretch'
+        ? 'aspect-stretch'
+        : mode === 'cinema43'
+          ? 'aspect-cinema43'
+          : mode === 'adapt'
+            ? 'aspect-adapt'
+            : 'aspect-cover';
+    screen.classList.add(cls);
     const btn = this.root.querySelector('#btn-aspect');
     if (btn) {
       btn.title =
@@ -1051,14 +1044,17 @@ export class TheaterUI {
           ? 'Aspect: Stretch'
           : mode === 'cinema43'
             ? 'Aspect: 4:3'
-            : 'Aspect: Adapt (letterbox)';
-      btn.textContent = mode === 'stretch' ? '↔' : mode === 'cinema43' ? '▭' : '⬚';
+            : mode === 'adapt'
+              ? 'Aspect: Adapt (letterbox)'
+              : 'Aspect: Cover (fill screen)';
+      btn.textContent =
+        mode === 'stretch' ? '↔' : mode === 'cinema43' ? '▭' : mode === 'adapt' ? '⬚' : '▣';
     }
   }
 
   cycleAspect() {
-    const order = ['adapt', 'stretch', 'cinema43'];
-    const cur = prefs.aspectMode || 'adapt';
+    const order = ['cover', 'adapt', 'stretch', 'cinema43'];
+    const cur = prefs.aspectMode || 'cover';
     const next = order[(order.indexOf(cur) + 1) % order.length];
     prefs.setAspectMode(next);
     this.applyAspectPref();
@@ -1067,36 +1063,10 @@ export class TheaterUI {
         ? 'Aspect: Stretch to fill'
         : next === 'cinema43'
           ? 'Aspect: Classic 4:3'
-          : 'Aspect: Adapt (keep picture)'
+          : next === 'adapt'
+            ? 'Aspect: Adapt (letterbox)'
+            : 'Aspect: Cover — fills the theater screen'
     );
-  }
-
-  applySeatPovPref() {
-    const on = prefs.seatPov !== false;
-    this.root.querySelector('.stage')?.classList.toggle('seat-pov-on', on);
-    const pov = this.root.querySelector('#seat-pov');
-    if (pov) pov.hidden = !on;
-    const btn = this.root.querySelector('#btn-pov');
-    if (btn) {
-      btn.classList.toggle('active', on);
-      btn.title = on ? 'Seat POV on — tap for screen-only' : 'Seat POV off — tap for theater seat view';
-    }
-    this.refreshPovDrinks();
-  }
-
-  toggleSeatPov() {
-    prefs.setSeatPov(!(prefs.seatPov !== false));
-    this.applySeatPovPref();
-    this.toast(prefs.seatPov !== false ? '🪑 Seat POV — cup holders ready' : '🎬 Screen-only view');
-  }
-
-  refreshPovDrinks() {
-    const me = (this.state?.participants || []).find((p) => p.id === this.me?.id);
-    const items = me?.items || [];
-    const l = this.root.querySelector('#pov-drink-l');
-    const r = this.root.querySelector('#pov-drink-r');
-    if (l) l.textContent = items.includes('soda') ? '🥤' : items.includes('popcorn') ? '🍿' : '';
-    if (r) r.textContent = items.includes('popcorn') ? '🍿' : items.includes('candy') ? '🍫' : items.includes('soda') ? '🥤' : '';
   }
 
 
