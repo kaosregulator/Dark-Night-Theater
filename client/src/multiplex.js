@@ -348,55 +348,37 @@ export async function openMultiplex(
     });
     scene.add(root);
 
-    // Prefer painting the real GLB cinema-screen meshes so alignment/UVs match
-    // the auditorium. Fall back to a fitted plane if none are found.
+    // Fit a VideoTexture plane to the GLB cinema-screen bounds. Masking frames
+    // in the model are hollow / UV'd as borders — painting them directly looks
+    // empty — so we hide screen parts and put a solid projection plane in front.
     screenMat = new THREE.MeshBasicMaterial({
-      color: 0x111118,
+      color: 0x22222a,
       toneMapped: false,
       side: THREE.DoubleSide,
     });
 
     if (cinemaScreenParts.length) {
-      // Pick the largest screen panel by world area as the primary surface.
-      let best = null;
-      let bestArea = 0;
       const box = new THREE.Box3();
       for (const m of cinemaScreenParts) {
         m.updateWorldMatrix(true, false);
-        const b = new THREE.Box3().setFromObject(m);
-        const s = b.getSize(new THREE.Vector3());
-        const area = Math.max(s.x, 0.01) * Math.max(s.y, 0.01) * Math.max(s.z, 0.01);
-        box.union(b);
-        if (area > bestArea) {
-          bestArea = area;
-          best = m;
-        }
+        box.expandByObject(m);
+        m.visible = false;
       }
-      for (const m of cinemaScreenParts) {
-        // Keep the largest face visible for the movie; hide thin masking strips.
-        if (m === best) {
-          m.visible = true;
-          m.material = screenMat;
-          m.renderOrder = 2;
-          screenMesh = m;
-        } else {
-          m.visible = false;
-        }
-      }
-      if (!screenMesh) {
-        screenMesh = best;
-        if (screenMesh) {
-          screenMesh.visible = true;
-          screenMesh.material = screenMat;
-        }
-      }
+      const size = box.getSize(new THREE.Vector3());
       const center = box.getCenter(new THREE.Vector3());
-      screenGlow.position.copy(center);
-      screenGlow.position.x += 0.45;
-      // Anchor helper object for distance/audio even if mesh has complex transform
-      if (screenMesh) {
-        screenMesh.userData.screenAnchor = center.clone();
-      }
+      // Screen sits on the west wall: width ≈ Z, height ≈ Y, thin ≈ X.
+      const screenW = Math.max(size.z, 4) * 0.96;
+      const screenH = Math.max(size.y, 2.2) * 0.9;
+      const geo = new THREE.PlaneGeometry(screenW, screenH);
+      screenMesh = new THREE.Mesh(geo, screenMat);
+      // Nudge toward seats (+X) so the plane clears the wall / masking depth.
+      screenMesh.position.set(box.max.x + 0.05, center.y, center.z);
+      screenMesh.rotation.y = Math.PI / 2;
+      screenMesh.renderOrder = 2;
+      scene.add(screenMesh);
+      screenMesh.userData.screenAnchor = screenMesh.position.clone();
+      screenGlow.position.copy(screenMesh.position);
+      screenGlow.position.x += 0.4;
     }
 
     if (!screenMesh) {
@@ -410,7 +392,7 @@ export async function openMultiplex(
       screenGlow.position.x += 0.45;
     }
 
-    // Start camera mid-auditorium looking at screen (−X)
+    // Start mid-auditorium facing the screen (−X)
     playerObj.position.set(-9.2, floorY(-9.2) + EYE, 0);
     playerObj.rotation.y = Math.PI / 2;
     pitch = 0;
@@ -587,11 +569,13 @@ export async function openMultiplex(
     userVol = Number(volSlider.value) / 100;
     volVal.textContent = `${volSlider.value}%`;
   };
-  hostEl.querySelector('#mx-seats').onclick = () => {
+  hostEl.querySelector('#mx-seats').onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    controls.unlock();
     const map = hostEl.querySelector('#mx-seatmap');
-    const opening = map.classList.contains('hidden');
-    if (opening) controls.unlock();
     map.classList.toggle('hidden');
+    blocker.classList.add('hidden');
   };
   hostEl.querySelector('#mx-seatmap-close').onclick = () => {
     hostEl.querySelector('#mx-seatmap').classList.add('hidden');

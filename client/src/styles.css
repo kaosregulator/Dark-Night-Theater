@@ -733,10 +733,11 @@ body {
 .mx-near-watch.hidden { display: none !important; }
 .multiplex-seatmap {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
-  z-index: 5; width: min(420px, 92vw);
+  z-index: 20; width: min(420px, 92vw);
   background: rgba(12,10,16,.94); border: 1px solid rgba(201,162,39,.4);
   border-radius: 16px; padding: .85rem 1rem 1rem; color: #f5ecd8;
   box-shadow: 0 16px 48px rgba(0,0,0,.55);
+  pointer-events: auto;
 }
 .multiplex-seatmap.hidden { display: none !important; }
 .mx-seatmap-head {
