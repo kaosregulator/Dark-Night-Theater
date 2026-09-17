@@ -218,7 +218,8 @@ export async function openMultiplex(
   };
   controls.addEventListener('lock', () => blocker.classList.add('hidden'));
   controls.addEventListener('unlock', () => {
-    if (!isTouch) blocker.classList.remove('hidden');
+    const seatOpen = !hostEl.querySelector('#mx-seatmap')?.classList.contains('hidden');
+    if (!isTouch && !seatOpen) blocker.classList.remove('hidden');
   });
 
   // ---- Touch stick + look zone (youngjin-style) ----
