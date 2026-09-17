@@ -348,43 +348,73 @@ export async function openMultiplex(
     });
     scene.add(root);
 
-    // Live video plane on the actual cinema screen bounds, nudged toward seats
-    // so it sits in front of the (hidden) GLB screen panels.
-    let screenW = 7.2;
-    let screenH = 3.9;
-    let screenPos = new THREE.Vector3(-13.35, 2.05, -1.0);
-    if (cinemaScreenParts.length) {
-      const box = new THREE.Box3();
-      for (const m of cinemaScreenParts) {
-        m.updateWorldMatrix(true, false);
-        box.expandByObject(m);
-        m.visible = false;
-      }
-      const size = box.getSize(new THREE.Vector3());
-      const center = box.getCenter(new THREE.Vector3());
-      // West-wall screen: width along Z, height along Y.
-      screenW = Math.max(size.z, size.x, 4) * 0.98;
-      screenH = Math.max(size.y, 2.2) * 0.92;
-      screenPos.set(center.x + 0.08, center.y, center.z);
-    }
-
-    const geo = new THREE.PlaneGeometry(screenW, screenH);
+    // Prefer painting the real GLB cinema-screen meshes so alignment/UVs match
+    // the auditorium. Fall back to a fitted plane if none are found.
     screenMat = new THREE.MeshBasicMaterial({
       color: 0x111118,
       toneMapped: false,
       side: THREE.DoubleSide,
-      depthWrite: true,
     });
-    screenMesh = new THREE.Mesh(geo, screenMat);
-    screenMesh.position.copy(screenPos);
-    screenMesh.rotation.y = Math.PI / 2; // face +X (seats)
-    screenMesh.renderOrder = 2;
-    scene.add(screenMesh);
-    screenGlow.position.copy(screenMesh.position);
-    screenGlow.position.x += 0.45;
 
-    // Start camera mid-auditorium looking at screen
+    if (cinemaScreenParts.length) {
+      // Pick the largest screen panel by world area as the primary surface.
+      let best = null;
+      let bestArea = 0;
+      const box = new THREE.Box3();
+      for (const m of cinemaScreenParts) {
+        m.updateWorldMatrix(true, false);
+        const b = new THREE.Box3().setFromObject(m);
+        const s = b.getSize(new THREE.Vector3());
+        const area = Math.max(s.x, 0.01) * Math.max(s.y, 0.01) * Math.max(s.z, 0.01);
+        box.union(b);
+        if (area > bestArea) {
+          bestArea = area;
+          best = m;
+        }
+      }
+      for (const m of cinemaScreenParts) {
+        // Keep the largest face visible for the movie; hide thin masking strips.
+        if (m === best) {
+          m.visible = true;
+          m.material = screenMat;
+          m.renderOrder = 2;
+          screenMesh = m;
+        } else {
+          m.visible = false;
+        }
+      }
+      if (!screenMesh) {
+        screenMesh = best;
+        if (screenMesh) {
+          screenMesh.visible = true;
+          screenMesh.material = screenMat;
+        }
+      }
+      const center = box.getCenter(new THREE.Vector3());
+      screenGlow.position.copy(center);
+      screenGlow.position.x += 0.45;
+      // Anchor helper object for distance/audio even if mesh has complex transform
+      if (screenMesh) {
+        screenMesh.userData.screenAnchor = center.clone();
+      }
+    }
+
+    if (!screenMesh) {
+      const geo = new THREE.PlaneGeometry(7.2, 3.9);
+      screenMesh = new THREE.Mesh(geo, screenMat);
+      screenMesh.position.set(-13.35, 2.05, -1.0);
+      screenMesh.rotation.y = Math.PI / 2;
+      screenMesh.renderOrder = 2;
+      scene.add(screenMesh);
+      screenGlow.position.copy(screenMesh.position);
+      screenGlow.position.x += 0.45;
+    }
+
+    // Start camera mid-auditorium looking at screen (−X)
     playerObj.position.set(-9.2, floorY(-9.2) + EYE, 0);
+    playerObj.rotation.y = Math.PI / 2;
+    pitch = 0;
+    camera.rotation.x = 0;
 
     // Apply host poster if provided
     applyPosters(posterSlots, posterUrl);
@@ -398,7 +428,12 @@ export async function openMultiplex(
     scene.add(floor);
   }
 
-  // ---- Bind live video to screen (same element — no second decode) ----
+  function screenWorldPos(out = new THREE.Vector3()) {
+    if (!screenMesh) return out.set(-13.35, 2.05, -1);
+    if (screenMesh.userData?.screenAnchor) return out.copy(screenMesh.userData.screenAnchor);
+    screenMesh.getWorldPosition(out);
+    return out;
+  }
   let videoBound = false;
   function bindVideo() {
     if (!videoEl || !screenMesh || videoBound) return videoBound;
@@ -474,7 +509,7 @@ export async function openMultiplex(
     if (!audio?.unlocked || !screenMesh) return;
     const listener = audio.ctx.listener;
     const cam = playerObj;
-    const sp = screenMesh.position;
+    const sp = screenWorldPos();
     // Listener = camera
     if (listener.positionX) {
       listener.positionX.setValueAtTime(cam.position.x, audio.ctx.currentTime);
@@ -529,7 +564,7 @@ export async function openMultiplex(
     controls.unlock();
     playerObj.position.set(seat.x, floorY(seat.x) + EYE * 0.85, seat.z);
     // Look toward screen
-    camera.lookAt(screenMesh?.position || new THREE.Vector3(-13, 2, -1));
+    camera.lookAt(screenWorldPos());
     pitch = 0;
     hostEl.querySelector('#mx-seatmap').classList.add('hidden');
     unlockAudio();
@@ -578,7 +613,7 @@ export async function openMultiplex(
 
   function nearScreen() {
     if (!screenMesh) return false;
-    return playerObj.position.distanceTo(screenMesh.position) < 7.5;
+    return playerObj.position.distanceTo(screenWorldPos()) < 7.5;
   }
 
   // ---- Frame loop ----
@@ -702,14 +737,21 @@ function fitVideoToScreen(video, mat, tex, mesh) {
   const vw = video.videoWidth || 16;
   const vh = video.videoHeight || 9;
   const videoAspect = vw / vh;
-  // Plane is screenW/screenH from construction — read from geometry
-  const params = mesh.geometry.parameters;
-  const planeAspect = (params?.width || 16) / (params?.height || 9);
-  // Use UV repeat/offset to letterbox without distorting
+  // Prefer PlaneGeometry params; else estimate from world bounds.
+  let planeAspect = 16 / 9;
+  const params = mesh.geometry?.parameters;
+  if (params?.width && params?.height) {
+    planeAspect = params.width / params.height;
+  } else {
+    mesh.updateWorldMatrix(true, false);
+    const size = new THREE.Box3().setFromObject(mesh).getSize(new THREE.Vector3());
+    const w = Math.max(size.x, size.z, 0.01);
+    const h = Math.max(size.y, 0.01);
+    planeAspect = w / h;
+  }
   tex.wrapS = THREE.ClampToEdgeWrapping;
   tex.wrapT = THREE.ClampToEdgeWrapping;
   if (videoAspect > planeAspect) {
-    // video wider — pillarbox top/bottom via scale on mesh Y? Prefer contain on X full
     const scale = planeAspect / videoAspect;
     tex.repeat.set(1, scale);
     tex.offset.set(0, (1 - scale) / 2);
