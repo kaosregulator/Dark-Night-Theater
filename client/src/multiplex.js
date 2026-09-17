@@ -3,7 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 // Immersive Cinema Multiplex explore (CC0 GLB).
 // ONE authoritative <video> → VideoTexture + Web Audio spatialization.
-// Mini patron character, 1st/3rd person, seat/door collision, clickable HUD.
+// Mini patron, WASD walk + arrow look, bottom menubar, mobile joystick.
 
 const MODEL_URL = '/models/cinema-multiplex.glb';
 const SPEED = 3.4;
@@ -170,34 +170,30 @@ export async function openMultiplex(
   hostEl.innerHTML = `
     <div class="multiplex">
       <canvas class="multiplex-canvas" id="mx-canvas"></canvas>
-      <div class="multiplex-hud" id="mx-hud">
-        <div class="multiplex-title">🎬 Multiplex · live screen</div>
+      <div class="multiplex-top" id="mx-top">
+        <div class="multiplex-title">🎬 Multiplex</div>
         <div class="multiplex-status" id="mx-status">
           <span id="mx-movie-flag">🎬 Movie Playing</span>
-          <button type="button" class="mx-audio-flag" id="mx-audio-flag">🔇 Click to Enable Theater Audio</button>
+          <button type="button" class="mx-audio-flag" id="mx-audio-flag">🔇 Enable audio</button>
         </div>
-        <div class="multiplex-hint" id="mx-hint">WASD walk anytime · drag canvas to look · Esc frees cursor</div>
+        <div class="multiplex-hint" id="mx-hint"></div>
         <div class="multiplex-people" id="mx-people"></div>
-        <div class="multiplex-actions">
-          <button type="button" class="btn" id="mx-view" title="First / third person">👁 3rd</button>
-          <button type="button" class="btn" id="mx-dim" title="Dim house lights">💡 Lights</button>
-          <button type="button" class="btn" id="mx-vol-toggle" title="Volume">🔊</button>
-          <button type="button" class="btn" id="mx-seats" title="Seat map">🪑 Seats</button>
-          <button type="button" class="btn" id="mx-watch">▶ Watch movie</button>
-          <button type="button" class="btn" id="mx-exit">Exit</button>
-        </div>
-        <div class="multiplex-vol hidden" id="mx-vol">
-          <label>Theater volume <input type="range" id="mx-vol-slider" min="0" max="200" value="100" /></label>
-          <span id="mx-vol-val">100%</span>
-        </div>
+      </div>
+      <nav class="mx-menubar" id="mx-menubar" aria-label="Multiplex menu">
+        <button type="button" class="mx-mb-item" id="mx-view" title="First / third person"><span>👁</span><em>View</em></button>
+        <button type="button" class="mx-mb-item" id="mx-dim" title="Dim house lights"><span>💡</span><em>Lights</em></button>
+        <button type="button" class="mx-mb-item" id="mx-vol-toggle" title="Volume"><span>🔊</span><em>Volume</em></button>
+        <button type="button" class="mx-mb-item" id="mx-seats" title="Seat map"><span>🪑</span><em>Seats</em></button>
+        <button type="button" class="mx-mb-item mx-mb-primary" id="mx-watch" title="Watch movie"><span>▶</span><em>Watch</em></button>
+        <button type="button" class="mx-mb-item" id="mx-exit" title="Exit multiplex"><span>🚪</span><em>Exit</em></button>
+      </nav>
+      <div class="multiplex-vol hidden" id="mx-vol">
+        <label>Theater volume <input type="range" id="mx-vol-slider" min="0" max="200" value="100" /></label>
+        <span id="mx-vol-val">100%</span>
       </div>
       <div class="multiplex-touch" id="mx-touch" aria-hidden="true">
         <div class="mx-stick" id="mx-stick"><div class="mx-knob" id="mx-knob"></div></div>
         <div class="mx-lookzone" id="mx-lookzone"></div>
-      </div>
-      <div class="multiplex-lookchip hidden" id="mx-lookchip">
-        <button type="button" class="btn ctl-main" id="mx-enter">🖱 Drag canvas to look (optional lock)</button>
-        <p class="mx-lookchip-note">WASD always walks · HUD stays clickable</p>
       </div>
       <div class="multiplex-seatmap hidden" id="mx-seatmap">
         <div class="mx-seatmap-head">
@@ -208,30 +204,28 @@ export async function openMultiplex(
         <div class="mx-seat-grid" id="mx-seat-grid"></div>
         <p class="mx-seat-hint">Tap a seat to sit facing the movie · Esc / ✕ closes</p>
       </div>
-      <button type="button" class="btn mx-near-watch hidden" id="mx-near-watch">🎬 Watch Movie</button>
     </div>
   `;
 
   const canvas = hostEl.querySelector('#mx-canvas');
   const peopleEl = hostEl.querySelector('#mx-people');
-  const lookChip = hostEl.querySelector('#mx-lookchip');
   const audioFlag = hostEl.querySelector('#mx-audio-flag');
-  const nearWatchBtn = hostEl.querySelector('#mx-near-watch');
   const volPanel = hostEl.querySelector('#mx-vol');
   const volSlider = hostEl.querySelector('#mx-vol-slider');
   const volVal = hostEl.querySelector('#mx-vol-val');
   const viewBtn = hostEl.querySelector('#mx-view');
+  const watchBtn = hostEl.querySelector('#mx-watch');
+  const menubar = hostEl.querySelector('#mx-menubar');
 
   const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
-  hostEl.querySelector('#mx-touch').style.display = isTouch ? 'block' : 'none';
-  hostEl.querySelector('#mx-hint').textContent = isTouch
-    ? 'Left stick walks · right drag looks · Seats / Watch stay tappable'
-    : 'WASD walks anytime · drag canvas to look · Esc frees cursor for buttons';
+  hostEl.querySelector('#mx-touch').classList.toggle('show', isTouch);
+  const walkHint = isTouch
+    ? 'Joystick walks · drag right side to look'
+    : 'WASD walk · ←→↑↓ look · drag canvas · Esc frees cursor';
+  hostEl.querySelector('#mx-hint').textContent = walkHint;
   if (movieTitle) {
-    hostEl.querySelector('#mx-movie-flag').textContent = `🎬 Movie Playing · ${movieTitle}`;
+    hostEl.querySelector('#mx-movie-flag').textContent = `🎬 ${movieTitle}`;
   }
-  // Free-walk by default — no click gate to move.
-  lookChip.classList.add('hidden');
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -280,6 +274,11 @@ export async function openMultiplex(
   let walkPhase = 0;
   let savedThirdPerson = true;
 
+  function setViewLabel(icon, label, title) {
+    viewBtn.innerHTML = `<span>${icon}</span><em>${label}</em>`;
+    viewBtn.title = title;
+  }
+
   function applyCameraMode() {
     if (sitting) {
       // Seat POV — first-person eye line toward the screen
@@ -288,8 +287,7 @@ export async function openMultiplex(
       camera.rotation.set(0, 0, 0);
       pitch = THREE.MathUtils.clamp(pitch, -0.45, 0.35);
       pitchObj.rotation.x = pitch;
-      viewBtn.textContent = '👁 Seat';
-      viewBtn.title = 'Seated POV';
+      setViewLabel('👁', 'Seat', 'Seated POV');
       return;
     }
     if (thirdPerson) {
@@ -298,16 +296,14 @@ export async function openMultiplex(
       camera.rotation.set(0, 0, 0);
       pitch = THREE.MathUtils.clamp(pitch, -0.55, 0.35);
       pitchObj.rotation.x = pitch;
-      viewBtn.textContent = '👁 1st';
-      viewBtn.title = 'Switch to first person';
+      setViewLabel('👁', '1st', 'Switch to first person');
     } else {
       character.visible = false;
       camera.position.set(0, EYE_FP, 0);
       camera.rotation.set(0, 0, 0);
       pitch = THREE.MathUtils.clamp(pitch, -1.15, 1.15);
       pitchObj.rotation.x = pitch;
-      viewBtn.textContent = '👁 3rd';
-      viewBtn.title = 'Switch to third person';
+      setViewLabel('👁', '3rd', 'Switch to third person');
     }
   }
   applyCameraMode();
@@ -316,8 +312,12 @@ export async function openMultiplex(
   const keys = Object.create(null);
   const touchMove = { x: 0, y: 0 };
   const lookDelta = { x: 0, y: 0 };
+  // Orionn-style smoothed walk velocity (WASD only — arrows look)
+  const walkVel = { x: 0, y: 0 };
+  const ARROW_LOOK = 1.55; // rad/sec
 
   const onKey = (e, down) => {
+    if (e.target && /^(INPUT|TEXTAREA|SELECT)$/i.test(e.target.tagName)) return;
     keys[e.code] = down;
     if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
       e.preventDefault();
@@ -327,6 +327,11 @@ export async function openMultiplex(
       applyCameraMode();
     }
     if (down && e.code === 'KeyC' && sitting) standUp();
+    if (down && e.code === 'Escape') {
+      hostEl.querySelector('#mx-seatmap')?.classList.add('hidden');
+      volPanel?.classList.add('hidden');
+      setLooking(false);
+    }
   };
   const keyDown = (e) => onKey(e, true);
   const keyUp = (e) => onKey(e, false);
@@ -353,11 +358,6 @@ export async function openMultiplex(
       setLooking(true);
     }
   }
-
-  hostEl.querySelector('#mx-enter').onclick = (e) => {
-    e.stopPropagation();
-    beginLookLock();
-  };
 
   // Drag-to-look (no lock required) — feels like controlling a mini character
   canvas.addEventListener('pointerdown', (e) => {
@@ -863,9 +863,10 @@ export async function openMultiplex(
     character.rotation.set(0, 0, 0);
     applyCameraMode(); // forces seated FP POV
     hostEl.querySelector('#mx-seatmap').classList.add('hidden');
-    lookChip.classList.add('hidden');
     unlockAudio();
-    hostEl.querySelector('#mx-hint').textContent = 'Seat POV · drag to look · WASD / C to stand';
+    hostEl.querySelector('#mx-hint').textContent = isTouch
+      ? 'Seat POV · drag to look · joystick / C to stand'
+      : 'Seat POV · ←→↑↓ look · WASD / C to stand';
   }
 
   function standUp() {
@@ -889,9 +890,7 @@ export async function openMultiplex(
     collide(playerRoot.position);
     playerRoot.position.y = floorY(playerRoot.position.x);
     applyCameraMode();
-    hostEl.querySelector('#mx-hint').textContent = isTouch
-      ? 'Left stick walks · right drag looks'
-      : 'WASD walks anytime · drag canvas to look · Esc frees cursor';
+    hostEl.querySelector('#mx-hint').textContent = walkHint;
   }
 
   buildSeatMap(hostEl, seatAnchors, (seat) => sitInSeat(seat));
@@ -902,21 +901,22 @@ export async function openMultiplex(
     if (sitting) {
       // Standing preference for next stand-up; stay in seat POV while seated
       savedThirdPerson = !savedThirdPerson;
-      viewBtn.textContent = savedThirdPerson ? '👁 Seat→3rd' : '👁 Seat→1st';
+      setViewLabel('👁', savedThirdPerson ? '→3rd' : '→1st', 'Camera after stand');
       return;
     }
     thirdPerson = !thirdPerson;
     applyCameraMode();
   };
-  hostEl.querySelector('#mx-dim').onclick = (e) => {
+  const dimBtn = hostEl.querySelector('#mx-dim');
+  dimBtn.onclick = (e) => {
     e.stopPropagation();
     dimmed = !dimmed;
     hemi.intensity = dimmed ? 0.25 : 0.85;
     key.intensity = dimmed ? 0.2 : 0.9;
     fill.intensity = dimmed ? 3 : 12;
     scene.background = new THREE.Color(dimmed ? 0x050308 : 0x0a0810);
-    hostEl.querySelector('#mx-dim').classList.toggle('active', dimmed);
-    hostEl.querySelector('#mx-dim').textContent = dimmed ? '🌙 Dim' : '💡 Lights';
+    dimBtn.classList.toggle('active', dimmed);
+    dimBtn.innerHTML = dimmed ? '<span>🌙</span><em>Dim</em>' : '<span>💡</span><em>Lights</em>';
   };
   hostEl.querySelector('#mx-vol-toggle').onclick = (e) => {
     e.stopPropagation();
@@ -931,9 +931,7 @@ export async function openMultiplex(
     e.preventDefault();
     e.stopPropagation();
     setLooking(false);
-    const map = hostEl.querySelector('#mx-seatmap');
-    map.classList.toggle('hidden');
-    lookChip.classList.add('hidden');
+    hostEl.querySelector('#mx-seatmap').classList.toggle('hidden');
   };
   hostEl.querySelector('#mx-seatmap-close').onclick = () => {
     hostEl.querySelector('#mx-seatmap').classList.add('hidden');
@@ -944,11 +942,10 @@ export async function openMultiplex(
     if (sharedAudio) wireAudioGraph(sharedAudio, false);
     onWatch?.({ zoom: Boolean(zoom) });
   }
-  hostEl.querySelector('#mx-watch').onclick = (e) => {
+  watchBtn.onclick = (e) => {
     e.stopPropagation();
     doWatch(nearScreen() || sitting);
   };
-  nearWatchBtn.onclick = () => doWatch(true);
   hostEl.querySelector('#mx-exit').onclick = (e) => {
     e.stopPropagation();
     setLooking(false);
@@ -956,9 +953,14 @@ export async function openMultiplex(
     onClose?.();
   };
 
-  // Stop HUD clicks from locking pointer
-  hostEl.querySelector('#mx-hud').addEventListener('click', (e) => e.stopPropagation());
-  hostEl.querySelector('#mx-hud').addEventListener('mousedown', (e) => e.stopPropagation());
+  // Stop menubar / top chrome from capturing look / pointer lock
+  const stopUi = (e) => e.stopPropagation();
+  hostEl.querySelector('#mx-top').addEventListener('click', stopUi);
+  hostEl.querySelector('#mx-top').addEventListener('mousedown', stopUi);
+  menubar.addEventListener('click', stopUi);
+  menubar.addEventListener('mousedown', stopUi);
+  volPanel.addEventListener('click', stopUi);
+  volPanel.addEventListener('mousedown', stopUi);
 
   function nearScreen() {
     if (!screenMesh) return false;
@@ -977,27 +979,55 @@ export async function openMultiplex(
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
 
+    // Pitch limits for look (mouse / arrows / touch)
+    const pMax = sitting ? 0.35 : thirdPerson ? 0.35 : 1.15;
+    const pMin = sitting ? -0.45 : thirdPerson ? -0.55 : -1.15;
+
+    // Touch look deltas
     if (isTouch && (lookDelta.x || lookDelta.y)) {
       yaw.rotation.y -= lookDelta.x * 0.0035;
-      pitch = THREE.MathUtils.clamp(pitch - lookDelta.y * 0.0028, thirdPerson ? -0.55 : -1.15, thirdPerson ? 0.35 : 1.15);
+      pitch = THREE.MathUtils.clamp(pitch - lookDelta.y * 0.0028, pMin, pMax);
       pitchObj.rotation.x = pitch;
       lookDelta.x = 0;
       lookDelta.y = 0;
     }
 
-    const wantMove =
-      keys.KeyW ||
-      keys.KeyA ||
-      keys.KeyS ||
-      keys.KeyD ||
-      keys.ArrowUp ||
-      keys.ArrowDown ||
-      keys.ArrowLeft ||
-      keys.ArrowRight ||
-      touchMove.x ||
-      touchMove.y;
+    // PC arrow keys look around (not move) — no on-screen arrows
+    if (!isTouch) {
+      let lookX = 0;
+      let lookY = 0;
+      if (keys.ArrowLeft) lookX -= 1;
+      if (keys.ArrowRight) lookX += 1;
+      if (keys.ArrowUp) lookY -= 1;
+      if (keys.ArrowDown) lookY += 1;
+      if (lookX || lookY) {
+        yaw.rotation.y -= lookX * ARROW_LOOK * dt;
+        pitch = THREE.MathUtils.clamp(pitch - lookY * ARROW_LOOK * 0.75 * dt, pMin, pMax);
+        pitchObj.rotation.x = pitch;
+      }
+    }
 
-    if (wantMove && !sitting) {
+    // Orionn-style smoothed WASD (+ touch stick) — arrows do not walk
+    let tx = (keys.KeyD ? 1 : 0) + (keys.KeyA ? -1 : 0) + (touchMove.x || 0);
+    let ty = (keys.KeyW ? 1 : 0) + (keys.KeyS ? -1 : 0) + (-(touchMove.y || 0));
+    const tLen = Math.hypot(tx, ty);
+    if (tLen > 1) {
+      tx /= tLen;
+      ty /= tLen;
+    }
+    const accel = 3.2 * dt;
+    const approach = (cur, tgt) => {
+      const d = tgt - cur;
+      if (Math.abs(d) <= accel) return tgt;
+      return cur + accel * Math.sign(d);
+    };
+    walkVel.x = approach(walkVel.x, tx);
+    walkVel.y = approach(walkVel.y, ty);
+
+    const moving = Math.hypot(walkVel.x, walkVel.y) > 0.02;
+    if (sitting && (moving || keys.KeyW || keys.KeyA || keys.KeyS || keys.KeyD || touchMove.x || touchMove.y)) {
+      standUp();
+    } else if (moving && !sitting) {
       forward.set(0, 0, -1).applyQuaternion(yaw.quaternion);
       forward.y = 0;
       forward.normalize();
@@ -1005,16 +1035,10 @@ export async function openMultiplex(
       right.y = 0;
       right.normalize();
       dir.set(0, 0, 0);
-      if (keys.KeyW || keys.ArrowUp) dir.add(forward);
-      if (keys.KeyS || keys.ArrowDown) dir.sub(forward);
-      if (keys.KeyA || keys.ArrowLeft) dir.sub(right);
-      if (keys.KeyD || keys.ArrowRight) dir.add(right);
-      if (touchMove.y || touchMove.x) {
-        dir.addScaledVector(forward, -touchMove.y);
-        dir.addScaledVector(right, touchMove.x);
-      }
+      dir.addScaledVector(forward, walkVel.y);
+      dir.addScaledVector(right, walkVel.x);
       if (dir.lengthSq() > 0) {
-        dir.normalize().multiplyScalar(SPEED * dt);
+        dir.normalize().multiplyScalar(SPEED * dt * Math.min(1, Math.hypot(walkVel.x, walkVel.y)));
         playerRoot.position.add(dir);
         collide(playerRoot.position);
         walkPhase += dt * 10;
@@ -1027,15 +1051,13 @@ export async function openMultiplex(
         if (legR) legR.rotation.x = -swing;
         if (armL) armL.rotation.x = -swing * 0.6;
         if (armR) armR.rotation.x = swing * 0.6;
-      } else {
-        walkPhase = 0;
-        ['legL', 'legR', 'armL', 'armR'].forEach((n) => {
-          const o = character.getObjectByName(n);
-          if (o) o.rotation.x = 0;
-        });
       }
-    } else if (sitting && (keys.KeyW || keys.KeyA || keys.KeyS || keys.KeyD || touchMove.x || touchMove.y)) {
-      standUp();
+    } else {
+      walkPhase = 0;
+      ['legL', 'legR', 'armL', 'armR'].forEach((n) => {
+        const o = character.getObjectByName(n);
+        if (o) o.rotation.x = 0;
+      });
     }
 
     // Smooth tier steps — stay grounded, no float/pop
@@ -1048,7 +1070,7 @@ export async function openMultiplex(
     updateSpatial(dt);
 
     const showNear = nearScreen() && !sitting;
-    nearWatchBtn.classList.toggle('hidden', !showNear);
+    watchBtn.classList.toggle('mx-near', showNear);
 
     const t = now * 0.001;
     for (const mesh of avatarById.values()) {
@@ -1261,82 +1283,91 @@ function setupTouchControls(hostEl, touchMove, lookDelta, onGesture) {
   const look = hostEl.querySelector('#mx-lookzone');
   if (!stick || !look) return;
 
-  let stickId = null;
-  let origin = null;
-  stick.addEventListener(
-    'touchstart',
-    (e) => {
-      e.preventDefault();
-      onGesture?.();
-      const t = e.changedTouches[0];
-      stickId = t.identifier;
-      const r = stick.getBoundingClientRect();
-      origin = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-    },
-    { passive: false }
-  );
-  stick.addEventListener(
-    'touchmove',
-    (e) => {
-      e.preventDefault();
-      const t = [...e.touches].find((x) => x.identifier === stickId);
-      if (!t || !origin) return;
-      const dx = t.clientX - origin.x;
-      const dy = t.clientY - origin.y;
-      const max = 48;
-      const len = Math.hypot(dx, dy) || 1;
-      const cx = (dx / len) * Math.min(len, max);
-      const cy = (dy / len) * Math.min(len, max);
-      knob.style.transform = `translate(${cx}px, ${cy}px)`;
-      touchMove.x = cx / max;
-      touchMove.y = cy / max;
-    },
-    { passive: false }
-  );
-  const endStick = (e) => {
-    if (![...e.changedTouches].some((t) => t.identifier === stickId)) return;
-    stickId = null;
-    origin = null;
+  // DN Cards–style pointer joystick (works in Discord iframes / iOS WebViews)
+  let joyId = null;
+  let joyCenter = { x: 0, y: 0 };
+  const R = 46;
+  const setJoy = (clientX, clientY) => {
+    const dx = clientX - joyCenter.x;
+    const dy = clientY - joyCenter.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const clamped = Math.min(d, R);
+    const nx = (dx / d) * clamped;
+    const ny = (dy / d) * clamped;
+    knob.style.transform = `translate(${nx}px, ${ny}px)`;
+    if (clamped < 8) {
+      touchMove.x = 0;
+      touchMove.y = 0;
+    } else {
+      touchMove.x = nx / R;
+      touchMove.y = ny / R;
+    }
+  };
+  const resetJoy = () => {
+    knob.style.transform = 'translate(0,0)';
     touchMove.x = 0;
     touchMove.y = 0;
-    knob.style.transform = 'translate(0,0)';
+    joyId = null;
   };
-  stick.addEventListener('touchend', endStick);
-  stick.addEventListener('touchcancel', endStick);
+  stick.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    onGesture?.();
+    const rect = stick.getBoundingClientRect();
+    joyCenter = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    joyId = e.pointerId;
+    try {
+      stick.setPointerCapture(e.pointerId);
+    } catch {
+      /* older WebViews */
+    }
+    setJoy(e.clientX, e.clientY);
+  });
+  stick.addEventListener('pointermove', (e) => {
+    if (joyId !== e.pointerId) return;
+    setJoy(e.clientX, e.clientY);
+  });
+  const endJoy = (e) => {
+    if (joyId === e.pointerId) resetJoy();
+  };
+  stick.addEventListener('pointerup', endJoy);
+  stick.addEventListener('pointercancel', endJoy);
+  stick.addEventListener('lostpointercapture', () => {
+    if (joyId != null) resetJoy();
+  });
+  const winUp = (e) => {
+    if (joyId === e.pointerId) resetJoy();
+  };
+  window.addEventListener('pointerup', winUp);
+  window.addEventListener('pointercancel', winUp);
+  window.addEventListener('blur', resetJoy);
 
   let lookId = null;
   let last = null;
-  look.addEventListener(
-    'touchstart',
-    (e) => {
-      e.preventDefault();
-      onGesture?.();
-      const t = e.changedTouches[0];
-      lookId = t.identifier;
-      last = { x: t.clientX, y: t.clientY };
-      hostEl.querySelector('#mx-lookchip')?.classList.add('hidden');
-    },
-    { passive: false }
-  );
-  look.addEventListener(
-    'touchmove',
-    (e) => {
-      e.preventDefault();
-      const t = [...e.touches].find((x) => x.identifier === lookId);
-      if (!t || !last) return;
-      lookDelta.x += t.clientX - last.x;
-      lookDelta.y += t.clientY - last.y;
-      last = { x: t.clientX, y: t.clientY };
-    },
-    { passive: false }
-  );
+  look.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    onGesture?.();
+    lookId = e.pointerId;
+    last = { x: e.clientX, y: e.clientY };
+    try {
+      look.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+  });
+  look.addEventListener('pointermove', (e) => {
+    if (lookId !== e.pointerId || !last) return;
+    lookDelta.x += e.clientX - last.x;
+    lookDelta.y += e.clientY - last.y;
+    last = { x: e.clientX, y: e.clientY };
+  });
   const endLook = (e) => {
-    if (![...e.changedTouches].some((t) => t.identifier === lookId)) return;
-    lookId = null;
-    last = null;
+    if (lookId === e.pointerId) {
+      lookId = null;
+      last = null;
+    }
   };
-  look.addEventListener('touchend', endLook);
-  look.addEventListener('touchcancel', endLook);
+  look.addEventListener('pointerup', endLook);
+  look.addEventListener('pointercancel', endLook);
 }
 
 function makeLabel(text) {

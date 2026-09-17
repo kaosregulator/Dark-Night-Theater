@@ -55,7 +55,7 @@ export function renderMainMenu(el, { snap, me, onJoinParty, onHost, onEnterCode,
       <button class="menu-btn ghost" data-act="code-cancel">Cancel</button>
     </div>
 
-    <p class="menu-hint">Tip: hosts share the code from the top bar. Prefer H.264 + AAC MP4 for Discord.</p>
+    <p class="menu-hint">Tip: hosts share the code from the top bar. Prefer H.264 + AAC MP4 for Discord. Phone says Activity not supported? App owner must enable <b>iOS + Android</b> under Developer Portal → Activities → Settings.</p>
   `;
 
   el.classList.remove('hidden');

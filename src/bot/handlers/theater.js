@@ -56,8 +56,24 @@ function controlRows(channelId, { activityUrl } = {}) {
       new ButtonBuilder().setLabel('Open Theater').setEmoji('🎬').setStyle(ButtonStyle.Link).setURL(activityUrl)
     );
   }
-  return [row1, row2];
+  const row3 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(ctlId('ioshelp', channelId))
+      .setLabel('iOS / Android not working?')
+      .setEmoji('📱')
+      .setStyle(ButtonStyle.Secondary)
+  );
+  return [row1, row2, row3];
 }
+
+const IOS_MOBILE_HELP =
+  '**“This Activity is not currently available on this OS”** comes from Discord — not this bot.\n\n' +
+  '**App owner fix (takes ~30 seconds):**\n' +
+  '1. Open [Discord Developer Portal](https://discord.com/developers/applications) → your **DarkNight** app\n' +
+  '2. Left sidebar: **Activities → Settings**\n' +
+  '3. Turn **Enable Activities** ON\n' +
+  '4. Under **Supported Platforms**, check **Web**, **iOS**, and **Android** → **Save**\n\n' +
+  'Then reopen the Activity from a voice channel on your phone. Until those boxes are checked, Discord blocks the Activity on mobile before our theater can load.';
 
 function panelEmbed(channelId) {
   const room = sessions.getRoom(channelId);
@@ -77,10 +93,16 @@ function panelEmbed(channelId) {
     .addFields(
       { name: 'Host', value: hostMention, inline: true },
       { name: 'Watching', value: String(room.participants.size), inline: true },
-      { name: 'Controls', value: p.locked ? '🔒 Host only' : '🔓 Everyone', inline: true }
+      { name: 'Controls', value: p.locked ? '🔒 Host only' : '🔓 Everyone', inline: true },
+      {
+        name: '📱 Phone / iOS',
+        value:
+          'If Discord says Activity isn’t available: Developer Portal → **Activities → Settings** → enable **iOS** + **Android**. Tap **📱 iOS / Android not working?** below for steps.',
+        inline: false,
+      }
     )
     .setFooter({
-      text: 'Open Theater in voice · Mobile: enable iOS+Android under Developer Portal → Activities → Settings → Supported Platforms',
+      text: 'Open Theater in a voice channel · Mobile needs iOS+Android checked in the Developer Portal',
     });
   return embed;
 }
@@ -144,6 +166,8 @@ export async function handleControlButton(interaction, action, channelId) {
 
   let result = { ok: true };
   switch (action) {
+    case 'ioshelp':
+      return interaction.reply({ content: IOS_MOBILE_HELP, ephemeral: true });
     case 'toggle':
       result = sessions.control(channelId, member.id, 'toggle');
       break;
