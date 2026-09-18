@@ -29,6 +29,7 @@ import {
   looksLikeImage,
   looksLikeVideo,
 } from './download.js';
+import { runImageTargetLab } from './lab.js';
 import {
   addChannel,
   addTarget,
@@ -39,6 +40,8 @@ import {
   removeTarget,
   updateTarget,
 } from './store.js';
+import { formatTestResult } from './scoring.js';
+import { upsertTargetEmbeddingVec } from './vector-search.js';
 
 /**
  * Image Target Hub — Discord file picker to add targets, one-click channel arming,
@@ -99,16 +102,33 @@ export async function bufferFromAttachment(attachment) {
   const downloaded = await downloadBytes(attachment.proxyURL || attachment.url);
   const buffer = Buffer.isBuffer(downloaded) ? downloaded : downloaded.buffer;
   const contentType = downloaded.contentType || attachment.contentType || '';
-  const loaded = await loadMediaAsImage(buffer, {
+  // Keep the raw media bytes for V2 multi-frame analysis. Also produce a
+  // single preview still for the hub thumbnail via loadMediaAsImage.
+  const previewMeta = {
     contentType,
     filename: attachment.name,
     url: attachment.url,
-  });
-  const out = Buffer.isBuffer(loaded) ? loaded : loaded.buffer;
-  const mediaKind =
-    (!Buffer.isBuffer(loaded) && loaded.mediaKind) ||
-    (looksLikeVideo(meta) ? 'video' : 'image');
-  return { buffer: out, mediaKind, sourceUrl: attachment.url };
+  };
+  let previewBuffer = buffer;
+  let mediaKind = looksLikeVideo(meta)
+    ? 'video'
+    : (attachment.name || '').toLowerCase().endsWith('.gif') || contentType === 'image/gif'
+      ? 'gif'
+      : 'image';
+  try {
+    const loaded = await loadMediaAsImage(buffer, previewMeta);
+    previewBuffer = Buffer.isBuffer(loaded) ? loaded : loaded.buffer;
+    if (!Buffer.isBuffer(loaded) && loaded.mediaKind) mediaKind = loaded.mediaKind;
+  } catch {
+    // Preview failure is non-fatal for still images.
+  }
+  return {
+    buffer,
+    previewBuffer,
+    mediaKind,
+    sourceUrl: attachment.url,
+    meta: previewMeta,
+  };
 }
 
 async function probeChannelPerms(guild, channelId) {
@@ -130,9 +150,13 @@ export async function saveTargetFromAttachment(
   attachment,
   { name = null, userId, autoWatchChannelId = null } = {},
 ) {
-  const { buffer, mediaKind, sourceUrl } = await bufferFromAttachment(attachment);
-  const analyzed = await analyzeTargetBuffer(buffer, { withEmbedding: true });
-  const previewJpeg = await makePreviewJpeg(buffer);
+  const { buffer, previewBuffer, mediaKind, sourceUrl, meta } =
+    await bufferFromAttachment(attachment);
+  const analyzed = await analyzeTargetBuffer(buffer, {
+    withEmbedding: true,
+    meta,
+  });
+  const previewJpeg = await makePreviewJpeg(previewBuffer || buffer);
   const displayName =
     (name && name.trim()) ||
     (attachment.name || 'target').replace(/\.[^.]+$/, '').slice(0, 64);
@@ -146,10 +170,16 @@ export async function saveTargetFromAttachment(
     contentHash: analyzed.contentHash,
     mimeType: attachment.contentType || analyzed.format || null,
     createdBy: userId,
-    mediaKind,
+    mediaKind: analyzed.mediaKind || mediaKind,
     previewJpeg,
     sourceUrl,
+    fingerprintVersion: 3,
+    fingerprints: analyzed.fingerprints || null,
   });
+
+  if (analyzed.embedding?.length) {
+    await upsertTargetEmbeddingVec(target.targetId, analyzed.embedding).catch(() => {});
+  }
 
   let watched = null;
   if (autoWatchChannelId) {
@@ -295,6 +325,12 @@ export async function buildHubPayload(guild) {
       .setEmoji('🔍')
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
+      .setCustomId(cid('lab'))
+      .setLabel('Lab')
+      .setEmoji('🧪')
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(!targets.length),
+    new ButtonBuilder()
       .setCustomId(cid('action'))
       .setLabel('Set action')
       .setStyle(ButtonStyle.Secondary),
@@ -398,6 +434,64 @@ export async function handleImageTargetHub(interaction) {
 
     if (action === 'add') return interaction.showModal(addImageModal());
     if (action === 'test') return interaction.showModal(testImageModal());
+
+    if (action === 'lab') {
+      const targets = await listTargets(guildId, { includeDisabled: false });
+      if (!targets.length) {
+        return interaction.reply({ content: 'Add a target first.', ephemeral: true });
+      }
+      if (targets.length === 1) {
+        await interaction.deferReply({ ephemeral: true });
+        const lab = await runImageTargetLab(guildId, {
+          targetId: targets[0].targetId,
+          sourceBuffer: targets[0].previewJpeg
+            ? Buffer.from(targets[0].previewJpeg)
+            : null,
+        });
+        const embed = new EmbedBuilder()
+          .setColor(lab.missed === 0 ? 0x3bd275 : 0xc9a227)
+          .setTitle('🧪 Image Target Lab')
+          .setDescription(
+            `\`\`\`\n${(lab.reportText || lab.message || '').slice(0, 3800)}\n\`\`\``,
+          );
+        return interaction.editReply({ embeds: [embed] });
+      }
+      const row = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(cid('lab_pick'))
+          .setPlaceholder('Lab which target?')
+          .addOptions(
+            targets.slice(0, 25).map((t) => ({
+              label: t.name.slice(0, 100),
+              value: t.targetId,
+              description: String(t.targetId).slice(0, 8),
+            })),
+          ),
+      );
+      return interaction.reply({
+        content: 'Select a target to stress-test:',
+        components: [row],
+        ephemeral: true,
+      });
+    }
+
+    if (action === 'lab_pick' && interaction.isStringSelectMenu()) {
+      await interaction.deferUpdate();
+      const id = interaction.values[0];
+      const targets = await listTargets(guildId, { includeDisabled: false });
+      const t = targets.find((x) => x.targetId === id);
+      const lab = await runImageTargetLab(guildId, {
+        targetId: id,
+        sourceBuffer: t?.previewJpeg ? Buffer.from(t.previewJpeg) : null,
+      });
+      const embed = new EmbedBuilder()
+        .setColor(lab.missed === 0 ? 0x3bd275 : 0xc9a227)
+        .setTitle('🧪 Image Target Lab')
+        .setDescription(
+          `\`\`\`\n${(lab.reportText || lab.message || '').slice(0, 3800)}\n\`\`\``,
+        );
+      return interaction.editReply({ content: null, embeds: [embed], components: [] });
+    }
 
     if (action === 'action') {
       const row = new ActionRowBuilder().addComponents(
@@ -503,31 +597,42 @@ export async function handleImageTargetHub(interaction) {
       if (!attachment) {
         return interaction.editReply({ content: '❌ No file received.' });
       }
-      const { buffer } = await bufferFromAttachment(attachment);
-      const result = await testAgainstTargets(guildId, buffer);
+      const { buffer, meta } = await bufferFromAttachment(attachment);
+      const result = await testAgainstTargets(guildId, buffer, { meta });
       if (!result.results?.length) {
         return interaction.editReply({
           content: result.message || 'No targets to test against.',
         });
       }
+      const top = result.top || result.results[0];
+      const detail = (result.reportText || formatTestResult(top, result.diagnostics) || '').slice(0, 1800);
+      const summary = result.results
+        .slice(0, 5)
+        .map((r) => {
+          const mark = r.matched ? '🚨' : '·';
+          const frame =
+            r.frameIndex != null ? ` · frame ${r.frameIndex}` : '';
+          const variant = r.variantKey ? ` · ${r.variantKey}` : '';
+          const deep = r.deepScan || result.diagnostics?.deepScan ? ' · deep' : '';
+          return `${mark} **${r.target.name}**: ${pct(r.finalScore ?? 0)} (${r.methodLabel || r.method || '—'}${frame}${variant}${deep})`;
+        })
+        .join('\n');
       const embed = new EmbedBuilder()
         .setColor(result.match ? 0xe74c3c : 0x3bd275)
-        .setTitle('🔍 Image Target Test')
-        .setDescription(
-          result.results
-            .slice(0, 5)
-            .map((r) => {
-              const mark = r.matched ? '🚨' : '·';
-              return `${mark} ${r.target.name}: ${pct(r.finalScore ?? 0)} (${r.method || '—'})`;
-            })
-            .join('\n'),
-        )
-        .addFields({
-          name: 'Result',
-          value: result.match
-            ? '🚨 **MATCH** — live posts like this should be actioned in watched channels'
-            : '✅ No match under current thresholds',
-        });
+        .setTitle('🔍 Image Target Test (V3 Forensic)')
+        .setDescription(summary)
+        .addFields(
+          {
+            name: 'Decision',
+            value: result.match
+              ? '🚨 **MATCH** — live posts like this should be actioned in watched channels'
+              : '✅ No match under current thresholds',
+          },
+          {
+            name: 'Top candidate detail',
+            value: `\`\`\`\n${detail || 'n/a'}\n\`\`\``,
+          },
+        );
       return interaction.editReply({ embeds: [embed] });
     }
 

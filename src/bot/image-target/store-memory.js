@@ -29,11 +29,14 @@ function ensure(guildId) {
     guilds.set(guildId, {
       ...structuredClone(DEFAULT_GUILD),
       targets: new Map(),
+      fingerprints: new Map(),
       detections: [],
       strikes: new Map(),
     });
   }
-  return guilds.get(guildId);
+  const g = guilds.get(guildId);
+  if (!g.fingerprints) g.fingerprints = new Map();
+  return g;
 }
 
 export function __resetMemoryStore() {
@@ -97,6 +100,7 @@ export async function addTarget(guildId, {
   mediaKind = 'image',
   previewJpeg = null,
   sourceUrl = null,
+  fingerprintVersion = 2,
 }) {
   const g = ensure(guildId);
   const targetId = randomUUID();
@@ -117,9 +121,45 @@ export async function addTarget(guildId, {
     enabled: true,
     previewJpeg,
     sourceUrl,
+    fingerprintVersion: fingerprintVersion ?? 2,
   };
   g.targets.set(targetId, target);
   return { ...target };
+}
+
+export async function listTargetFingerprints(guildId, targetId) {
+  const g = ensure(guildId);
+  const list = g.fingerprints?.get(targetId) || [];
+  return list.map((fp) => ({ ...fp }));
+}
+
+export async function replaceTargetFingerprints(guildId, targetId, fingerprints) {
+  const g = ensure(guildId);
+  if (!g.fingerprints) g.fingerprints = new Map();
+  const target = g.targets.get(targetId);
+  if (!target) return [];
+  const rows = (fingerprints || []).map((fp) => ({
+    fingerprintId: randomUUID(),
+    guildId,
+    targetId,
+    frameIndex: fp.frameIndex ?? 0,
+    variantKey: fp.variantKey || 'original',
+    dHash: fp.dHash || null,
+    aHash: fp.aHash || null,
+    pHash: fp.pHash || null,
+    blockHash: fp.blockHash || null,
+    edgeHash: fp.edgeHash || null,
+    colorHash: fp.colorHash || null,
+    pdqHash: fp.pdqHash || null,
+    features: fp.features || null,
+    videoHash: fp.videoHash || null,
+    embedding: fp.embedding || null,
+    contentHash: fp.contentHash || null,
+    timestampMs: fp.timestampMs ?? 0,
+  }));
+  g.fingerprints.set(targetId, rows);
+  target.fingerprintVersion = 3;
+  return rows.map((r) => ({ ...r }));
 }
 
 export async function updateTarget(guildId, targetId, patch) {
@@ -131,7 +171,9 @@ export async function updateTarget(guildId, targetId, patch) {
 }
 
 export async function removeTarget(guildId, targetId) {
-  return ensure(guildId).targets.delete(targetId);
+  const g = ensure(guildId);
+  g.fingerprints?.delete(targetId);
+  return g.targets.delete(targetId);
 }
 
 export async function setChannels(guildId, channelIds) {

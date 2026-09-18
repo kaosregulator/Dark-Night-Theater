@@ -77,10 +77,55 @@ CREATE TABLE IF NOT EXISTS image_target_strikes (
 const ALTER_SQL = `
 ALTER TABLE image_targets
   ADD COLUMN IF NOT EXISTS preview_jpeg BYTEA,
-  ADD COLUMN IF NOT EXISTS source_url TEXT;
+  ADD COLUMN IF NOT EXISTS source_url TEXT,
+  ADD COLUMN IF NOT EXISTS fingerprint_version INTEGER NOT NULL DEFAULT 1;
 
 ALTER TABLE image_target_guild_settings
   ALTER COLUMN action SET DEFAULT 'delete_warn';
+`;
+
+/** V2 fingerprint sets — multiple frames/variants per target. */
+const V2_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS image_target_fingerprints (
+  fingerprint_id UUID PRIMARY KEY,
+  guild_id TEXT NOT NULL,
+  target_id UUID NOT NULL,
+  frame_index INTEGER NOT NULL DEFAULT 0,
+  variant_key TEXT NOT NULL DEFAULT 'original',
+  d_hash TEXT,
+  a_hash TEXT,
+  p_hash TEXT,
+  block_hash TEXT,
+  edge_hash TEXT,
+  embedding JSONB,
+  content_hash TEXT,
+  timestamp_ms DOUBLE PRECISION DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT image_target_fingerprints_target_fk
+    FOREIGN KEY (target_id) REFERENCES image_targets(target_id)
+    ON DELETE CASCADE,
+  CONSTRAINT image_target_fingerprints_unique
+    UNIQUE (target_id, frame_index, variant_key)
+);
+
+CREATE INDEX IF NOT EXISTS image_target_fingerprints_guild_idx
+  ON image_target_fingerprints (guild_id);
+CREATE INDEX IF NOT EXISTS image_target_fingerprints_target_idx
+  ON image_target_fingerprints (target_id);
+`;
+
+/** V3 forensic columns — PDQ, color, local features, video hash. */
+const V3_ALTER_SQL = `
+ALTER TABLE image_target_fingerprints
+  ADD COLUMN IF NOT EXISTS color_hash TEXT,
+  ADD COLUMN IF NOT EXISTS pdq_hash TEXT,
+  ADD COLUMN IF NOT EXISTS features JSONB,
+  ADD COLUMN IF NOT EXISTS video_hash TEXT;
+
+ALTER TABLE image_targets
+  ADD COLUMN IF NOT EXISTS video_hash TEXT,
+  ADD COLUMN IF NOT EXISTS pdq_hash TEXT,
+  ADD COLUMN IF NOT EXISTS color_hash TEXT;
 `;
 
 export async function migrateImageTargetSchema() {
@@ -89,6 +134,15 @@ export async function migrateImageTargetSchema() {
   }
   await query(SCHEMA_SQL);
   await query(ALTER_SQL);
-  log.info('[image-target] Postgres schema ready');
+  await query(V2_SCHEMA_SQL);
+  await query(V3_ALTER_SQL);
+  // Optional pgvector — best-effort, never blocks boot.
+  try {
+    const { ensurePgvector } = await import('./vector-search.js');
+    await ensurePgvector();
+  } catch {
+    // ignore
+  }
+  log.info('[image-target] Postgres schema ready (V3 forensic fingerprints)');
   return true;
 }

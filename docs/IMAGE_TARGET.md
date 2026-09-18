@@ -1,4 +1,4 @@
-# Image Target Watcher
+# Image Target Watcher (V3 Forensic Engine)
 
 Lightweight add-on for DarkNight Home Theater. Admins upload a **target image**;
 the bot watches chosen channels and reacts when someone posts a visually similar
@@ -6,138 +6,98 @@ image, GIF frame, video frame, custom emoji, or sticker.
 
 This is **not** a full moderation suite — just focused visual matching.
 
-## How matching works
+## How matching works (V3)
 
 ```
-IMAGE POSTED
-    ↓
-Is it image/gif/video/emoji?
-   ↙          ↘
- NO           YES
-  ↓            ↓
-IGNORE      local pHash (dHash + blockHash)
-               ↓
-         Very obvious match?
-          ↙            ↘
-        YES            NO (but close)
-         ↓              ↓
-       MATCH      Jina CLIP embedding
-                        ↓
-                  cosine similarity
-                        ↓
-                   MATCH / NO MATCH
+DISCORD MEDIA
+    │
+    ├─ IMAGE ──► media normalizer
+    └─ VIDEO/GIF ► frame sampler
+              │
+              ▼
+       QUICK FINGERPRINT
+       (dHash/aHash/pHash/block/edge/color/PDQ)
+              │
+     ┌────────┼────────┐
+     ▼        ▼        ▼
+  obvious   skip    uncertain
+   MATCH   NO MATCH     │
+                        ▼
+                   DEEP SCAN
+            denser frames + forensic variants
+            screenshot strip / collage tiles
+            adaptive crops / rotations / color destruction
+            ORB local features / sequence / videoHash
+            multi-candidate Jina (optional)
+                        │
+                        ▼
+                 EVIDENCE FUSION → MATCH / NO MATCH
 ```
 
-1. **Local perceptual hash** (always on) — cheap Hamming-distance pre-filter.
-   Obvious near-duplicates never call the API.
-2. **Jina `jina-clip-v2` embeddings** (optional) — only for the ambiguous band.
-   Cosine similarity of L2-normalized vectors, score in `[0, 1]`.
+1. **Quick scan first** — Normal uploads stay fast.
+2. **Adaptive deep scan** — Only uncertain/suspicious media escalate.
+3. **Independent evidence** — Structural hashes, PDQ, color, ORB keypoints,
+   videoHash, ordered frame sequences, region/partial overlap, mirror signal,
+   optional Jina — fused, not single-gated.
+4. **Partial / collage / screenshot** — Deep path searches tiles, adaptive
+   crops, and Discord-UI strips so cropped/collaged/screenshot copies still hit.
+5. **Lab** — Hub **Lab** button self-attacks a target (JPEG, crop, mirror,
+   rotate, caption, collage, …) and reports detected/missed.
 
-**Similarity score:** cosine similarity after L2-normalization. Default threshold
-`0.90` means “vectors are very close,” **not** “90% of pixels are identical.”
-
-Without `JINA_API_KEY`, only the local pHash stage runs (exact / near-exact
-duplicates still match).
+V1 targets (single hash) and V2 fingerprint sets keep working.
+Guild isolation and SSRF/download limits are unchanged.
 
 ## Fast setup
 
-1. **Message Content Intent** (required for watching): Discord Developer Portal →
-   your app → **Bot** → Privileged Gateway Intents → turn ON **Message Content
-   Intent** → Save. Without this, Discord rejects login with `Used disallowed
-   intents`. The bot falls back to theater-only mode; image watching stays off
-   until the intent is enabled.
-2. **Postgres** — Railway → bot service → Variables →
-   `DATABASE_URL` = `${{Postgres.DATABASE_URL}}` → redeploy. Tables are created
-   on boot.
-3. Optional: `JINA_API_KEY` (https://jina.ai/?sui=apikey).
-4. Re-register slash commands after deploy:
-
-```bash
-npm run register
-```
-
-Bot needs in watched channels: **View Channel**, **Read Message History**,
-**Manage Messages** (delete), **Send Messages** (warn). Kick/Ban/Moderate
-Members only if you pick those actions. The hub only shows permission warnings
-when a watched channel is actually missing one of these.
+1. **Message Content Intent** on in the Discord Developer Portal.
+2. **Postgres** `DATABASE_URL` (Railway). Schema migrates on boot (V2
+   fingerprints + V3 PDQ/color/features/videoHash columns; optional pgvector).
+3. Optional: `JINA_API_KEY`.
+4. `npm run register` after deploy if commands need refresh.
 
 ## Commands (hub)
 
 `/image-target` (alias `/imagetrack`) — Manage Guild required.
 
-Opens an ephemeral **Image Target Hub** (no slash subcommand maze):
-
 | Control | What it does |
 |---|---|
-| **Add image** | Discord file picker modal — attach image/GIF/video |
-| **Watch this channel** | Arm live matching in the channel you ran the command in |
-| **Unwatch this channel** | Stop watching this channel |
-| **Test image** | Dry-run match (no delete / no punish) |
-| **Set action** | Pick what happens on a match |
+| **Add image** | Attach image/GIF/video as a target |
+| **Watch / Unwatch** | Arm live matching in the current channel |
+| **Test image** | Dry-run with full forensic diagnostics |
+| **Lab** | Self-attack the target; report detected/missed |
+| **Set action** | log / delete_warn / timeout / kick / ban |
 | **Remove target** | Delete a saved target |
-| **Refresh** | Reload status + gallery |
 
-Or attach a file on the slash command itself:
+Targets are **guild-scoped**.
 
-```
-/image-target image:<file> name:Scam banner
-```
-
-That saves the target, **auto-watches the current channel**, prefers
-**Delete + warn**, and shows the hub gallery with a preview thumbnail.
-
-### Match actions
-
-`log` · `delete_log` · `delete_warn` (**default**) · `delete_timeout` ·
-`delete_kick` · `delete_ban`
-
-Default is **delete + public warn** so matches are visible. Older guilds still
-on silent `delete_log` are upgraded when you open the hub or add a target.
-
-Targets are **guild-scoped** — Guild A never affects Guild B.
-
-## Typical flow
+## Optional env knobs
 
 ```
-Admin:  /image-target          (in #general)
-Bot:    Hub opens → checklist
-
-Admin:  Add image  (or attach on the slash command)
-Bot:    Target saved · gallery shows preview · channel auto-watched
-
-User posts the same image in that channel
-Bot:    Deletes message · public warn · logs detection embed
+IMAGE_TARGET_MAX_FRAMES=10
+IMAGE_TARGET_DEEP_MAX_FRAMES=18
+IMAGE_TARGET_MAX_VARIANTS=9
+IMAGE_TARGET_DEEP_MAX_VARIANTS=20
+IMAGE_TARGET_MAX_JINA_CALLS=6
+IMAGE_TARGET_ANALYSIS_TIMEOUT_MS=25000
+IMAGE_TARGET_DEEP_ANALYSIS_TIMEOUT_MS=35000
+IMAGE_TARGET_MAX_REGIONS=14
+IMAGE_TARGET_MAX_ADAPTIVE_CROPS=12
+IMAGE_TARGET_FEATURES=1
+IMAGE_TARGET_VECTOR_TOP_K=10
 ```
 
-**Why test worked but live posts did nothing (before this hub):**
-
-- `/test` never required a watched channel; live matching only runs in channels
-  you arm with **Watch this channel** (or auto-watch on add).
-- Old default `delete_log` deleted quietly with no public warn; failed deletes
-  could look like “success.” Default is now `delete_warn`, and failed deletes
-  still warn.
-
-## Modules
-
-| File | Role |
-|---|---|
-| `phash.js` | dHash + blockHash via `sharp` |
-| `providers/types.js` | `ImageSimilarityProvider` interface |
-| `providers/jina.js` | Jina CLIP v2 + embedding cache |
-| `detector.js` | Two-stage matcher |
-| `download.js` | Safe download, SSRF guards, video frame via ffmpeg |
-| `store.js` | **Postgres** repository (`DATABASE_URL`) |
-| `migrate.js` | Idempotent schema migration on boot |
-| `actions.js` | Log / delete / warn / timeout / kick / ban |
-| `commands.js` | Slash command → hub |
-| `hub.js` | Interactive hub (file upload, gallery, arm channel) |
-| `watcher.js` | `messageCreate` / `messageUpdate` listener |
-| `../../db/postgres.js` | Shared `pg` pool (Railway TLS) |
-
-## Dev / tests
+## Tests
 
 ```bash
-IMAGE_TARGET_MEMORY=1 npm run test:image-target
+npm run test:image-target
 ```
 
-In-memory store is for unit tests only. Production uses Postgres.
+## Limits / known limitations
+
+- Not 100% — extreme adversarial edits, tiny collage tiles of a huge canvas,
+  or content outside deep-sample budgets can still slip.
+- Lab uses the stored preview JPEG when the original upload bytes are gone;
+  re-add targets for the strongest lab results.
+- pgvector is best-effort; without the extension, cosine search stays in JS.
+- FFmpeg required for video (Railway/Nixpacks).
+- SSRF protections, size limits, redirects, timeouts unchanged.

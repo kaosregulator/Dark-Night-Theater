@@ -17,7 +17,7 @@
     "emoji:fetch": "node scripts/fetch-emoji-offline.mjs",
     "test:marquee": "node scripts/test-marquee-booths.mjs",
     "test:playback-sync": "node scripts/test-playback-sync-target.mjs",
-    "test:image-target": "node --test src/bot/image-target/__tests__/image-target.test.js"
+    "test:image-target": "node --test src/bot/image-target/__tests__/image-target.test.js src/bot/image-target/__tests__/image-target-v2.test.js src/bot/image-target/__tests__/image-target-v21.test.js src/bot/image-target/__tests__/image-target-v3.test.js"
   },
   "dependencies": {
     "@discord/embedded-app-sdk": "^1.9.0",
