@@ -29,6 +29,7 @@ import {
   looksLikeImage,
   looksLikeVideo,
 } from './download.js';
+import { runImageTargetLab } from './lab.js';
 import {
   addChannel,
   addTarget,
@@ -40,6 +41,7 @@ import {
   updateTarget,
 } from './store.js';
 import { formatTestResult } from './scoring.js';
+import { upsertTargetEmbeddingVec } from './vector-search.js';
 
 /**
  * Image Target Hub — Discord file picker to add targets, one-click channel arming,
@@ -171,9 +173,13 @@ export async function saveTargetFromAttachment(
     mediaKind: analyzed.mediaKind || mediaKind,
     previewJpeg,
     sourceUrl,
-    fingerprintVersion: 2,
+    fingerprintVersion: 3,
     fingerprints: analyzed.fingerprints || null,
   });
+
+  if (analyzed.embedding?.length) {
+    await upsertTargetEmbeddingVec(target.targetId, analyzed.embedding).catch(() => {});
+  }
 
   let watched = null;
   if (autoWatchChannelId) {
@@ -319,6 +325,12 @@ export async function buildHubPayload(guild) {
       .setEmoji('🔍')
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
+      .setCustomId(cid('lab'))
+      .setLabel('Lab')
+      .setEmoji('🧪')
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(!targets.length),
+    new ButtonBuilder()
       .setCustomId(cid('action'))
       .setLabel('Set action')
       .setStyle(ButtonStyle.Secondary),
@@ -422,6 +434,64 @@ export async function handleImageTargetHub(interaction) {
 
     if (action === 'add') return interaction.showModal(addImageModal());
     if (action === 'test') return interaction.showModal(testImageModal());
+
+    if (action === 'lab') {
+      const targets = await listTargets(guildId, { includeDisabled: false });
+      if (!targets.length) {
+        return interaction.reply({ content: 'Add a target first.', ephemeral: true });
+      }
+      if (targets.length === 1) {
+        await interaction.deferReply({ ephemeral: true });
+        const lab = await runImageTargetLab(guildId, {
+          targetId: targets[0].targetId,
+          sourceBuffer: targets[0].previewJpeg
+            ? Buffer.from(targets[0].previewJpeg)
+            : null,
+        });
+        const embed = new EmbedBuilder()
+          .setColor(lab.missed === 0 ? 0x3bd275 : 0xc9a227)
+          .setTitle('🧪 Image Target Lab')
+          .setDescription(
+            `\`\`\`\n${(lab.reportText || lab.message || '').slice(0, 3800)}\n\`\`\``,
+          );
+        return interaction.editReply({ embeds: [embed] });
+      }
+      const row = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(cid('lab_pick'))
+          .setPlaceholder('Lab which target?')
+          .addOptions(
+            targets.slice(0, 25).map((t) => ({
+              label: t.name.slice(0, 100),
+              value: t.targetId,
+              description: String(t.targetId).slice(0, 8),
+            })),
+          ),
+      );
+      return interaction.reply({
+        content: 'Select a target to stress-test:',
+        components: [row],
+        ephemeral: true,
+      });
+    }
+
+    if (action === 'lab_pick' && interaction.isStringSelectMenu()) {
+      await interaction.deferUpdate();
+      const id = interaction.values[0];
+      const targets = await listTargets(guildId, { includeDisabled: false });
+      const t = targets.find((x) => x.targetId === id);
+      const lab = await runImageTargetLab(guildId, {
+        targetId: id,
+        sourceBuffer: t?.previewJpeg ? Buffer.from(t.previewJpeg) : null,
+      });
+      const embed = new EmbedBuilder()
+        .setColor(lab.missed === 0 ? 0x3bd275 : 0xc9a227)
+        .setTitle('🧪 Image Target Lab')
+        .setDescription(
+          `\`\`\`\n${(lab.reportText || lab.message || '').slice(0, 3800)}\n\`\`\``,
+        );
+      return interaction.editReply({ content: null, embeds: [embed], components: [] });
+    }
 
     if (action === 'action') {
       const row = new ActionRowBuilder().addComponents(
@@ -549,7 +619,7 @@ export async function handleImageTargetHub(interaction) {
         .join('\n');
       const embed = new EmbedBuilder()
         .setColor(result.match ? 0xe74c3c : 0x3bd275)
-        .setTitle('🔍 Image Target Test (V2.1)')
+        .setTitle('🔍 Image Target Test (V3 Forensic)')
         .setDescription(summary)
         .addFields(
           {

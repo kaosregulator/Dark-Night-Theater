@@ -114,6 +114,20 @@ CREATE INDEX IF NOT EXISTS image_target_fingerprints_target_idx
   ON image_target_fingerprints (target_id);
 `;
 
+/** V3 forensic columns — PDQ, color, local features, video hash. */
+const V3_ALTER_SQL = `
+ALTER TABLE image_target_fingerprints
+  ADD COLUMN IF NOT EXISTS color_hash TEXT,
+  ADD COLUMN IF NOT EXISTS pdq_hash TEXT,
+  ADD COLUMN IF NOT EXISTS features JSONB,
+  ADD COLUMN IF NOT EXISTS video_hash TEXT;
+
+ALTER TABLE image_targets
+  ADD COLUMN IF NOT EXISTS video_hash TEXT,
+  ADD COLUMN IF NOT EXISTS pdq_hash TEXT,
+  ADD COLUMN IF NOT EXISTS color_hash TEXT;
+`;
+
 export async function migrateImageTargetSchema() {
   if (!hasDatabaseUrl()) {
     throw new Error('DATABASE_URL missing — cannot migrate image-target schema');
@@ -121,6 +135,14 @@ export async function migrateImageTargetSchema() {
   await query(SCHEMA_SQL);
   await query(ALTER_SQL);
   await query(V2_SCHEMA_SQL);
-  log.info('[image-target] Postgres schema ready (V2 fingerprints)');
+  await query(V3_ALTER_SQL);
+  // Optional pgvector — best-effort, never blocks boot.
+  try {
+    const { ensurePgvector } = await import('./vector-search.js');
+    await ensurePgvector();
+  } catch {
+    // ignore
+  }
+  log.info('[image-target] Postgres schema ready (V3 forensic fingerprints)');
   return true;
 }

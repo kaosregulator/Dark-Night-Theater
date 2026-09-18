@@ -98,6 +98,10 @@ function mapFingerprintRow(row) {
     pHash: row.p_hash || null,
     blockHash: row.block_hash || null,
     edgeHash: row.edge_hash || null,
+    colorHash: row.color_hash || null,
+    pdqHash: row.pdq_hash || null,
+    features: row.features || null,
+    videoHash: row.video_hash || null,
     embedding,
     contentHash: row.content_hash || null,
     timestampMs: row.timestamp_ms == null ? 0 : Number(row.timestamp_ms),
@@ -303,11 +307,13 @@ export async function replaceTargetFingerprints(guildId, targetId, fingerprints,
         `INSERT INTO image_target_fingerprints (
            fingerprint_id, guild_id, target_id, frame_index, variant_key,
            d_hash, a_hash, p_hash, block_hash, edge_hash,
+           color_hash, pdq_hash, features, video_hash,
            embedding, content_hash, timestamp_ms
          ) VALUES (
            $1,$2,$3,$4,$5,
            $6,$7,$8,$9,$10,
-           $11::jsonb,$12,$13
+           $11,$12,$13::jsonb,$14,
+           $15::jsonb,$16,$17
          )
          RETURNING *`,
         [
@@ -321,6 +327,10 @@ export async function replaceTargetFingerprints(guildId, targetId, fingerprints,
           fp.pHash || null,
           fp.blockHash || null,
           fp.edgeHash || null,
+          fp.colorHash || null,
+          fp.pdqHash || null,
+          fp.features == null ? null : JSON.stringify(fp.features),
+          fp.videoHash || null,
           fp.embedding == null ? null : JSON.stringify(fp.embedding),
           fp.contentHash || null,
           fp.timestampMs ?? 0,
@@ -330,7 +340,7 @@ export async function replaceTargetFingerprints(guildId, targetId, fingerprints,
     }
 
     await c.query(
-      `UPDATE image_targets SET fingerprint_version = 2
+      `UPDATE image_targets SET fingerprint_version = 3
        WHERE guild_id = $1 AND target_id = $2`,
       [guildId, targetId],
     );

@@ -149,12 +149,16 @@ export async function replaceTargetFingerprints(guildId, targetId, fingerprints)
     pHash: fp.pHash || null,
     blockHash: fp.blockHash || null,
     edgeHash: fp.edgeHash || null,
+    colorHash: fp.colorHash || null,
+    pdqHash: fp.pdqHash || null,
+    features: fp.features || null,
+    videoHash: fp.videoHash || null,
     embedding: fp.embedding || null,
     contentHash: fp.contentHash || null,
     timestampMs: fp.timestampMs ?? 0,
   }));
   g.fingerprints.set(targetId, rows);
-  target.fingerprintVersion = 2;
+  target.fingerprintVersion = 3;
   return rows.map((r) => ({ ...r }));
 }
 
