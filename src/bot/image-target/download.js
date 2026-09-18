@@ -203,14 +203,74 @@ export function extensionOf(nameOrUrl = '') {
   return base.slice(dot + 1).toLowerCase();
 }
 
+/**
+ * Magic-byte / container sniffing for misleading MIME or missing extensions.
+ * @returns {{ kind: 'image'|'gif'|'video', format: string } | null}
+ */
+export function sniffMediaKind(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 12) return null;
+  const b0 = buffer[0];
+  const b1 = buffer[1];
+  const b2 = buffer[2];
+  const b3 = buffer[3];
+
+  // JPEG
+  if (b0 === 0xff && b1 === 0xd8 && b2 === 0xff) {
+    return { kind: 'image', format: 'jpeg' };
+  }
+  // PNG / APNG
+  if (b0 === 0x89 && b1 === 0x50 && b2 === 0x4e && b3 === 0x47) {
+    return { kind: 'image', format: 'png' };
+  }
+  // GIF
+  if (b0 === 0x47 && b1 === 0x49 && b2 === 0x46 && b3 === 0x38) {
+    return { kind: 'gif', format: 'gif' };
+  }
+  // WEBP (RIFF....WEBP)
+  if (
+    b0 === 0x52 && b1 === 0x49 && b2 === 0x46 && b3 === 0x46 &&
+    buffer.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    return { kind: 'image', format: 'webp' };
+  }
+  // ISO BMFF (mp4/mov) — ....ftyp
+  if (buffer.toString('ascii', 4, 8) === 'ftyp') {
+    return { kind: 'video', format: 'mp4' };
+  }
+  // WebM / Matroska EBML
+  if (b0 === 0x1a && b1 === 0x45 && b2 === 0xdf && b3 === 0xa3) {
+    return { kind: 'video', format: 'webm' };
+  }
+  // AVI (RIFF....AVI )
+  if (
+    b0 === 0x52 && b1 === 0x49 && b2 === 0x46 && b3 === 0x46 &&
+    buffer.toString('ascii', 8, 12) === 'AVI '
+  ) {
+    return { kind: 'video', format: 'avi' };
+  }
+  return null;
+}
+
 export function looksLikeImage({ contentType, filename, url } = {}) {
-  if (contentType && IMAGE_MIME.has(contentType)) return true;
+  const ct = (contentType || '').toLowerCase().split(';')[0].trim();
+  if (ct && IMAGE_MIME.has(ct)) return true;
   const ext = extensionOf(filename || url || '');
-  return IMAGE_EXT.has(ext);
+  if (IMAGE_EXT.has(ext)) return true;
+  // Discord CDN attachments sometimes omit a useful content-type / extension.
+  if (
+    (!ct || ct === 'application/octet-stream') &&
+    /(?:cdn\.discordapp\.com|media\.discordapp\.net|discordapp\.com)\/(?:attachments|ephemeral-attachments)/i.test(
+      String(url || ''),
+    )
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export function looksLikeVideo({ contentType, filename, url } = {}) {
-  if (contentType && contentType.startsWith('video/')) return true;
+  const ct = (contentType || '').toLowerCase().split(';')[0].trim();
+  if (ct && ct.startsWith('video/')) return true;
   const ext = extensionOf(filename || url || '');
   return VIDEO_EXT.has(ext);
 }

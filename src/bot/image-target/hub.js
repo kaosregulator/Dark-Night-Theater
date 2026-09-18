@@ -535,7 +535,7 @@ export async function handleImageTargetHub(interaction) {
         });
       }
       const top = result.top || result.results[0];
-      const detail = (result.reportText || formatTestResult(top) || '').slice(0, 1000);
+      const detail = (result.reportText || formatTestResult(top, result.diagnostics) || '').slice(0, 1800);
       const summary = result.results
         .slice(0, 5)
         .map((r) => {
@@ -543,12 +543,13 @@ export async function handleImageTargetHub(interaction) {
           const frame =
             r.frameIndex != null ? ` · frame ${r.frameIndex}` : '';
           const variant = r.variantKey ? ` · ${r.variantKey}` : '';
-          return `${mark} **${r.target.name}**: ${pct(r.finalScore ?? 0)} (${r.methodLabel || r.method || '—'}${frame}${variant})`;
+          const deep = r.deepScan || result.diagnostics?.deepScan ? ' · deep' : '';
+          return `${mark} **${r.target.name}**: ${pct(r.finalScore ?? 0)} (${r.methodLabel || r.method || '—'}${frame}${variant}${deep})`;
         })
         .join('\n');
       const embed = new EmbedBuilder()
         .setColor(result.match ? 0xe74c3c : 0x3bd275)
-        .setTitle('🔍 Image Target Test (V2)')
+        .setTitle('🔍 Image Target Test (V2.1)')
         .setDescription(summary)
         .addFields(
           {

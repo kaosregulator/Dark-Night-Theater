@@ -6,16 +6,9 @@ import {
 import { localSimilarity } from './fingerprints.js';
 
 /**
- * Score aggregation for Image Target V2.
- *
- * For each (target × frame × variant × fingerprint) comparison we compute
- * local ensemble similarity, optionally blend with Jina cosine similarity,
- * then take the strongest evidence across frames/variants as the media score.
+ * Score aggregation for Image Target V2 / V2.1.
  */
 
-/**
- * Compare one candidate fingerprint against one target fingerprint record.
- */
 export function scoreFingerprintPair(candidateFp, targetFp) {
   const local = localSimilarity(candidateFp, targetFp);
   return {
@@ -30,27 +23,18 @@ export function scoreFingerprintPair(candidateFp, targetFp) {
   };
 }
 
-/**
- * Decide whether local evidence is enough / needs embedding / should skip.
- */
 export function classifyLocalEvidence(localScore) {
   if (localScore >= LOCAL_OBVIOUS_SIMILARITY) return 'obvious';
   if (localScore < LOCAL_SKIP_SIMILARITY) return 'skip';
   if (localScore >= LOCAL_CANDIDATE_SIMILARITY) return 'candidate';
-  // Soft band: still allow Jina for edited images that hash poorly.
   return 'uncertain';
 }
 
-/**
- * Combine local + embedding into a final confidence.
- * Embedding dominates when present; local provides floor for obvious matches.
- */
 export function combineScores({ localScore, embeddingScore = null, exact = false }) {
   if (exact) {
     return { finalScore: 1, method: 'exact' };
   }
   if (embeddingScore != null && Number.isFinite(embeddingScore)) {
-    // Blend lightly so strong local evidence can still surface near Jina.
     const finalScore = Math.max(
       embeddingScore,
       localScore >= LOCAL_OBVIOUS_SIMILARITY
@@ -74,9 +58,6 @@ export function combineScores({ localScore, embeddingScore = null, exact = false
   };
 }
 
-/**
- * Keep the strongest evidence row for a target across frames/variants.
- */
 export function pickStrongest(evidenceRows) {
   if (!evidenceRows?.length) return null;
   return evidenceRows.reduce((best, row) => {
@@ -86,9 +67,6 @@ export function pickStrongest(evidenceRows) {
   }, null);
 }
 
-/**
- * Build a human-readable detection method string for logs / test UI.
- */
 export function describeMethod(row) {
   if (!row) return '—';
   if (row.method === 'exact') return 'exact';
@@ -100,20 +78,23 @@ export function describeMethod(row) {
     .sort((a, b) => b[1] - a[1])[0];
   if (topLocal) parts.push(topLocal[0]);
   else if (row.method === 'phash') parts.push('pHash');
+  if (row.deepScan) parts.push('deep');
   return parts.join(' + ') || row.method || '—';
 }
 
 /**
- * Format a test/debug report block for one target result.
+ * Format a test/debug report block for one target result (V2.1 diagnostics).
  */
-export function formatTestResult(row) {
+export function formatTestResult(row, diagnostics = null) {
   if (!row) return '';
+  const diag = diagnostics || row.diagnostics || {};
   const lines = [
     `Target: ${row.target?.name || '—'}`,
+    `Media: ${String(row.mediaKind || diag.mediaKind || '—').toUpperCase()}`,
     `Final Score: ${(row.finalScore ?? 0).toFixed(2)}`,
-    `Method: ${describeMethod(row)}`,
+    `Decision: ${row.matched ? 'MATCH' : 'NO MATCH'}`,
+    `Detection Method: ${describeMethod(row)}`,
   ];
-  if (row.mediaKind) lines.push(`Media: ${String(row.mediaKind).toUpperCase()}`);
   if (row.frameIndex != null) lines.push(`Matching Frame: ${row.frameIndex}`);
   if (row.timestampSec != null && Number.isFinite(row.timestampSec)) {
     lines.push(`Timestamp: ${row.timestampSec.toFixed(1)}s`);
@@ -133,7 +114,16 @@ export function formatTestResult(row) {
     row.embeddingScore != null ? row.embeddingScore.toFixed(2) : 'n/a',
   );
   lines.push('');
-  lines.push('Decision:');
-  lines.push(row.matched ? 'MATCH' : 'NO MATCH');
+  lines.push(`Deep Scan: ${diag.deepScan ? 'YES' : 'NO'}`);
+  if (diag.reason) lines.push(`Reason for Escalation: ${diag.reason}`);
+  if (diag.framesSampled != null) lines.push(`Frames Sampled: ${diag.framesSampled}`);
+  if (diag.framesDeepAnalyzed != null) {
+    lines.push(`Frames Deeply Analyzed: ${diag.framesDeepAnalyzed}`);
+  }
+  if (diag.variantsAnalyzed != null) {
+    lines.push(`Variants Analyzed: ${diag.variantsAnalyzed}`);
+  }
+  if (diag.jinaCalls != null) lines.push(`Jina Calls: ${diag.jinaCalls}`);
+  if (diag.framesDeduped) lines.push(`Frames Deduped: ${diag.framesDeduped}`);
   return lines.join('\n');
 }

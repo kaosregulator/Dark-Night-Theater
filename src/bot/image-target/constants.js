@@ -138,6 +138,15 @@ export const LOCAL_MATCH_WITHOUT_EMBEDDING = envFloat(
 );
 
 /**
+ * During deep scan only: slightly lower local floor for heavily edited media
+ * when core hashes still agree (pHash/dHash). Does not apply to quick scan.
+ */
+export const DEEP_LOCAL_MATCH_WITHOUT_EMBEDDING = envFloat(
+  'IMAGE_TARGET_DEEP_LOCAL_MATCH',
+  0.60,
+);
+
+/**
  * Override embedding match threshold (falls back to guild/target threshold).
  * Env IMAGE_TARGET_EMBEDDING_THRESHOLD.
  */
@@ -154,6 +163,51 @@ export const IMAGE_TARGET_MAX_STORED_FINGERPRINTS = envInt(
   40,
   { min: 4, max: 120 },
 );
+
+// ---- Image Target V2.1 adaptive deep-scan budgets ------------------------
+
+/** Deep-scan frame cap (GIF/video second pass). */
+export const IMAGE_TARGET_DEEP_MAX_FRAMES = envInt(
+  'IMAGE_TARGET_DEEP_MAX_FRAMES',
+  18,
+  { min: 4, max: 36 },
+);
+
+/** Deep-scan variant cap per frame (extra crop/color/screenshot transforms). */
+export const IMAGE_TARGET_DEEP_MAX_VARIANTS = envInt(
+  'IMAGE_TARGET_DEEP_MAX_VARIANTS',
+  14,
+  { min: 4, max: 24 },
+);
+
+/** Max Jina embedding calls per media item (quick + deep combined). */
+export const IMAGE_TARGET_MAX_JINA_CALLS = envInt(
+  'IMAGE_TARGET_MAX_JINA_CALLS',
+  6,
+  { min: 1, max: 16 },
+);
+
+/** Extra wall-clock budget when deep scan escalates (ms, additive soft cap). */
+export const IMAGE_TARGET_DEEP_ANALYSIS_TIMEOUT_MS = envInt(
+  'IMAGE_TARGET_DEEP_ANALYSIS_TIMEOUT_MS',
+  35_000,
+  { min: 5_000, max: 120_000 },
+);
+
+/**
+ * Single-channel hash hint used as a cheap "preliminary relevance" test when
+ * the ensemble score looks like a hard skip (heavily edited targets).
+ */
+export const DEEP_RELEVANCE_CHANNEL_MIN = envFloat(
+  'IMAGE_TARGET_DEEP_RELEVANCE',
+  0.45,
+);
+
+/** Hamming distance at/below which two frames are treated as near-duplicates. */
+export const FRAME_DEDUP_HAMMING = envInt('IMAGE_TARGET_FRAME_DEDUP_HAMMING', 4, {
+  min: 0,
+  max: 16,
+});
 
 /** Supported still-image MIME / extensions. */
 export const IMAGE_MIME = new Set([

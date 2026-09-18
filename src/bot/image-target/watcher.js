@@ -247,6 +247,7 @@ export async function handleImageTargetMessage(message) {
             'analysis_timeout',
             'dns_failed',
             'empty',
+            'media_decode_failed',
           ].some((k) => msg.includes(k))
         ) {
           log.warn('[image-target] candidate failed:', msg);

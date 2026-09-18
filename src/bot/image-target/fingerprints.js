@@ -380,19 +380,28 @@ export function localSimilarity(a, b) {
   }
 
   const weighted = wsum > 0 ? total / wsum : 0;
-  // Robust fallback only when several channels agree — avoids false positives
-  // from a single noisy hash (e.g. edgeHash on unrelated patterned images).
+  // Robust fallback only when several *core* channels agree — aHash/edgeHash
+  // alone are too easy to spoof with flat/solid images.
   present.sort((x, y) => y - x);
-  const strongCount = present.filter((s) => s >= 0.75).length;
+  const coreKeys = ['dHash', 'pHash', 'blockHash'];
+  const coreStrong = coreKeys.filter((k) => {
+    const aHas = k === 'dHash'
+      ? Boolean(a?.dHash || a?.perceptualHash)
+      : Boolean(a?.[k]);
+    const bHas = k === 'dHash'
+      ? Boolean(b?.dHash || b?.perceptualHash)
+      : Boolean(b?.[k]);
+    return aHas && bHas && (scores[k] ?? 0) >= 0.75;
+  }).length;
   const top2 =
     present.length >= 2
       ? (present[0] + present[1]) / 2
       : present[0] || 0;
   const score =
-    strongCount >= 3
+    coreStrong >= 2
       ? Math.max(weighted, top2 * 0.98)
       : weighted;
-  return { score, scores, weighted, top2, strongCount };
+  return { score, scores, weighted, top2, strongCount: coreStrong };
 }
 
 /**

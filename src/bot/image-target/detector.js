@@ -1,7 +1,11 @@
 import { log } from '../../logger.js';
 import {
   IMAGE_TARGET_ANALYSIS_TIMEOUT_MS,
+  IMAGE_TARGET_DEEP_ANALYSIS_TIMEOUT_MS,
+  IMAGE_TARGET_DEEP_MAX_VARIANTS,
+  DEEP_LOCAL_MATCH_WITHOUT_EMBEDDING,
   IMAGE_TARGET_EMBEDDING_THRESHOLD,
+  IMAGE_TARGET_MAX_JINA_CALLS,
   IMAGE_TARGET_MAX_STORED_FINGERPRINTS,
   IMAGE_TARGET_MAX_VARIANTS,
   LOCAL_MATCH_WITHOUT_EMBEDDING,
@@ -9,13 +13,17 @@ import {
   LOCAL_SKIP_SIMILARITY,
 } from './constants.js';
 import {
+  buildDeepScanDiagnostics,
+  shouldEscalateToDeepScan,
+} from './deep-scan.js';
+import {
   contentHash,
   fingerprintImage,
   localSimilarity,
 } from './fingerprints.js';
 import { getJinaProvider } from './providers/jina.js';
 import { cosineSimilarity } from './providers/types.js';
-import { sampleMediaFrames } from './sampler.js';
+import { sampleMediaFrames, sampleMediaFramesDeep } from './sampler.js';
 import {
   classifyLocalEvidence,
   combineScores,
@@ -33,13 +41,11 @@ import {
 import { generateVariants } from './variants.js';
 
 /**
- * Image Target V2 detector.
+ * Image Target V2.1 — Adaptive Deep Detection.
  *
- * MEDIA → normalize/sample frames → variants → multi-fingerprint
- *      → local ensemble ranking → optional Jina → aggregate → decision
- *
- * Local hashes rank and soft-filter; they are NOT an absolute rejection gate
- * for uncertain / edited candidates (those still go to Jina when available).
+ * MEDIA → quick scan → local ensemble
+ *   → obvious MATCH | clearly unrelated NO MATCH
+ *   → uncertain/suspicious → DEEP SCAN (denser frames + variants + multi Jina)
  */
 
 function withTimeout(promise, ms, label = 'analysis_timeout') {
@@ -52,7 +58,6 @@ function withTimeout(promise, ms, label = 'analysis_timeout') {
   ]);
 }
 
-/** Synthesize a V1-compatible fingerprint list from the primary target row. */
 function legacyFingerprintsFromTarget(target) {
   return [
     {
@@ -80,25 +85,32 @@ async function fingerprintsForTarget(guildId, target) {
 }
 
 /**
- * Build analysis units (frame × variant × fingerprint) for a media buffer.
- * Embeddings are optional and computed later only for top candidates.
+ * Build analysis units (frame × variant × fingerprint).
  */
 async function analyzeMediaUnits(buffer, meta = {}, {
   maxVariants = IMAGE_TARGET_MAX_VARIANTS,
   forStorage = false,
+  deep = false,
+  sampleOpts = {},
 } = {}) {
-  const { frames, mediaKind } = await sampleMediaFrames(buffer, meta);
+  const sampled = deep
+    ? await sampleMediaFramesDeep(buffer, meta, sampleOpts)
+    : await sampleMediaFrames(buffer, meta, sampleOpts);
+
+  const { frames, mediaKind } = sampled;
   const units = [];
   const sourceContentHash = contentHash(buffer);
 
-  // For storage, keep fewer variants per frame to bound Postgres size.
   const variantCap = forStorage
-    ? Math.min(maxVariants, 4)
-    : maxVariants;
+    ? Math.min(Math.max(maxVariants, 8), IMAGE_TARGET_DEEP_MAX_VARIANTS)
+    : deep
+      ? Math.max(maxVariants, IMAGE_TARGET_DEEP_MAX_VARIANTS)
+      : maxVariants;
 
   for (const frame of frames) {
     const variants = await generateVariants(frame.buffer, {
       maxVariants: variantCap,
+      deep,
     });
     for (const variant of variants) {
       const fp = await fingerprintImage(variant.buffer);
@@ -110,18 +122,32 @@ async function analyzeMediaUnits(buffer, meta = {}, {
         buffer: variant.buffer,
         fingerprint: fp,
         sourceContentHash,
+        deep,
       });
     }
   }
 
-  return { units, mediaKind, sourceContentHash, frameCount: frames.length };
+  return {
+    units,
+    mediaKind,
+    sourceContentHash,
+    frameCount: frames.length,
+    frames,
+    framesDeduped: sampled.framesDeduped || 0,
+    durationSec: sampled.durationSec ?? null,
+    totalFrames: sampled.totalFrames ?? null,
+  };
 }
 
 /**
- * Select a compact set of fingerprint rows to persist for a target.
- * Prefer original + grayscale + center-crop variants across sampled frames.
+ * Prefer timeline diversity (begin / early / mid / late / end) + variant mix.
  */
 function selectStorageFingerprints(units) {
+  if (!units.length) return [];
+
+  const frameIndexes = [...new Set(units.map((u) => u.frameIndex))].sort(
+    (a, b) => a - b,
+  );
   const prefer = [
     'original',
     'grayscale-normalized',
@@ -129,20 +155,81 @@ function selectStorageFingerprints(units) {
     'center-crop-80',
     'center-crop-70',
     'crop-bottom-20',
+    'letterbox-square',
+    'trim-bars',
     'flip-h',
+    'border-trim-12',
+    'cover-square',
   ];
+
+  // Bucket frames into 5 timeline zones.
+  const buckets = { begin: [], early: [], middle: [], late: [], end: [] };
+  if (frameIndexes.length === 1) {
+    buckets.begin = frameIndexes;
+  } else {
+    const last = frameIndexes[frameIndexes.length - 1] || 1;
+    for (const idx of frameIndexes) {
+      const t = idx / last;
+      if (t <= 0.05) buckets.begin.push(idx);
+      else if (t <= 0.3) buckets.early.push(idx);
+      else if (t <= 0.7) buckets.middle.push(idx);
+      else if (t <= 0.9) buckets.late.push(idx);
+      else buckets.end.push(idx);
+    }
+    // Ensure non-empty coverage when sparse.
+    if (!buckets.begin.length) buckets.begin.push(frameIndexes[0]);
+    if (!buckets.end.length) buckets.end.push(frameIndexes[frameIndexes.length - 1]);
+    if (!buckets.middle.length) {
+      buckets.middle.push(frameIndexes[Math.floor(frameIndexes.length / 2)]);
+    }
+  }
+
+  const selected = [];
+  const seen = new Set();
+  const pickFromBucket = (indexes, variantKeys) => {
+    for (const fi of indexes) {
+      for (const vk of variantKeys) {
+        const u = units.find((x) => x.frameIndex === fi && x.variantKey === vk);
+        if (!u) continue;
+        const key = `${u.frameIndex}:${u.variantKey}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        selected.push(u);
+        return;
+      }
+      // Fallback any variant for this frame.
+      const any = units.find((x) => x.frameIndex === fi);
+      if (any) {
+        const key = `${any.frameIndex}:${any.variantKey}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          selected.push(any);
+        }
+      }
+    }
+  };
+
+  for (const zone of ['begin', 'early', 'middle', 'late', 'end']) {
+    pickFromBucket(buckets[zone], prefer);
+  }
+
+  // Fill remaining slots with preference order across all frames.
   const scored = units.map((u) => {
     const pref = prefer.indexOf(u.variantKey);
     return { u, rank: pref === -1 ? 50 : pref };
   });
   scored.sort((a, b) => a.rank - b.rank || a.u.frameIndex - b.u.frameIndex);
-  return scored.slice(0, IMAGE_TARGET_MAX_STORED_FINGERPRINTS).map((s) => s.u);
+  for (const s of scored) {
+    if (selected.length >= IMAGE_TARGET_MAX_STORED_FINGERPRINTS) break;
+    const key = `${s.u.frameIndex}:${s.u.variantKey}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    selected.push(s.u);
+  }
+
+  return selected.slice(0, IMAGE_TARGET_MAX_STORED_FINGERPRINTS);
 }
 
-/**
- * Build fingerprints (+ optional embeddings) for a newly uploaded target.
- * Returns V1-compatible primary fields PLUS a `fingerprints` array for storage.
- */
 export async function analyzeTargetBuffer(buffer, {
   withEmbedding = true,
   meta = {},
@@ -161,14 +248,23 @@ export async function analyzeTargetBuffer(buffer, {
   let embedding = null;
   let embeddingModel = null;
 
-  // Embed a small subset of storage units (original frames) to keep API use low.
   if (withEmbedding && jina.available) {
-    const embedUnits = selected.filter(
-      (u) => u.variantKey === 'original',
-    ).slice(0, Math.min(4, selected.length));
-    if (!embedUnits.length && selected[0]) embedUnits.push(selected[0]);
+    // Embed original variants across timeline buckets (not just frame 0).
+    const embedUnits = selected.filter((u) => u.variantKey === 'original');
+    const spaced = [];
+    if (embedUnits.length) {
+      const step = Math.max(1, Math.floor(embedUnits.length / 4));
+      for (let i = 0; i < embedUnits.length && spaced.length < 4; i += step) {
+        spaced.push(embedUnits[i]);
+      }
+      if (!spaced.includes(embedUnits[embedUnits.length - 1])) {
+        spaced.push(embedUnits[embedUnits.length - 1]);
+      }
+    } else if (selected[0]) {
+      spaced.push(selected[0]);
+    }
 
-    for (const u of embedUnits) {
+    for (const u of spaced.slice(0, 4)) {
       try {
         const emb = await jina.generateEmbedding(u.buffer, {
           cacheKey: u.fingerprint.contentHash,
@@ -199,7 +295,6 @@ export async function analyzeTargetBuffer(buffer, {
   }));
 
   return {
-    // V1 primary fields (first/primary representation)
     dHash: primary.fingerprint.dHash,
     blockHash: primary.fingerprint.blockHash,
     aHash: primary.fingerprint.aHash,
@@ -216,9 +311,6 @@ export async function analyzeTargetBuffer(buffer, {
   };
 }
 
-/**
- * Persist V2 fingerprint set after addTarget (hub/commands call this).
- */
 export async function persistTargetFingerprints(guildId, targetId, fingerprints) {
   if (!fingerprints?.length) return [];
   return replaceTargetFingerprints(guildId, targetId, fingerprints);
@@ -232,6 +324,7 @@ function buildEvidenceRow({
   embeddingScore = null,
   exact = false,
   threshold,
+  deepScan = false,
 }) {
   const combined = combineScores({
     localScore: local.localScore,
@@ -255,68 +348,11 @@ function buildEvidenceRow({
     variantKey: unit.variantKey,
     mediaKind: unit.mediaKind,
     threshold,
+    deepScan,
   };
 }
 
-async function scoreMediaAgainstTargets(guildId, buffer, {
-  meta = {},
-  dryRun = false,
-} = {}) {
-  const targets = await listTargets(guildId, { includeDisabled: false });
-  if (!targets.length) {
-    return {
-      match: null,
-      results: [],
-      message: 'No enabled targets in this server.',
-      mediaKind: null,
-    };
-  }
-
-  const { units, mediaKind, sourceContentHash } = await analyzeMediaUnits(
-    buffer,
-    meta,
-  );
-
-  // Exact byte match against any target content hash.
-  for (const t of targets) {
-    if (t.contentHash && t.contentHash === sourceContentHash) {
-      const threshold = await effectiveThreshold(guildId, t);
-      const row = {
-        target: t,
-        finalScore: 1,
-        score: 1,
-        method: 'exact',
-        localScore: 1,
-        localScores: {},
-        embeddingScore: null,
-        usedJina: false,
-        matched: true,
-        frameIndex: 0,
-        timestampSec: 0,
-        variantKey: 'original',
-        mediaKind,
-        threshold,
-        dHashDistance: 0,
-        blockHashDistance: 0,
-      };
-      row.methodLabel = describeMethod(row);
-      return {
-        match: row,
-        results: [row],
-        mediaKind,
-        sourceContentHash,
-      };
-    }
-  }
-
-  // Load fingerprint sets (V2 rows or V1 legacy synthesis).
-  const targetFps = new Map();
-  for (const t of targets) {
-    targetFps.set(t.targetId, await fingerprintsForTarget(guildId, t));
-  }
-
-  // Stage 1: local ensemble across all units × target fingerprints.
-  /** @type {Map<string, object[]>} */
+function scoreUnitsAgainstTargets(units, targets, targetFps) {
   const perTargetEvidence = new Map();
   for (const t of targets) perTargetEvidence.set(t.targetId, []);
 
@@ -339,8 +375,7 @@ async function scoreMediaAgainstTargets(guildId, buffer, {
     }
   }
 
-  // Rank targets by best local score.
-  const ranked = targets
+  return targets
     .map((t) => {
       const rows = perTargetEvidence.get(t.targetId) || [];
       const best = rows.reduce(
@@ -351,10 +386,223 @@ async function scoreMediaAgainstTargets(guildId, buffer, {
     })
     .filter((r) => r.best)
     .sort((a, b) => b.best.local.localScore - a.best.local.localScore);
+}
 
+function decideMatch(row, { bestLocalScore, band, embeddingScore, threshold, deepScan = false }) {
+  if (embeddingScore != null) {
+    row.matched = row.finalScore >= threshold;
+    return row;
+  }
+  if (bestLocalScore >= LOCAL_OBVIOUS_SIMILARITY) {
+    const ls = row.localScores || {};
+    if (
+      (ls.pHash ?? 0) >= 0.7 ||
+      (ls.dHash ?? 0) >= 0.8 ||
+      (ls.blockHash ?? 0) >= 0.8
+    ) {
+      row.matched = true;
+      return row;
+    }
+  }
+  const ls = row.localScores || {};
+  const floor = deepScan
+    ? DEEP_LOCAL_MATCH_WITHOUT_EMBEDDING
+    : LOCAL_MATCH_WITHOUT_EMBEDDING;
+
+  // Quick-scan core gate.
+  const quickCoreOk =
+    !deepScan &&
+    ((ls.pHash ?? 0) >= 0.7 || (ls.dHash ?? 0) >= 0.75);
+
+  // Deep scan: pHash-led or strong dHash+blockHash — blocks flat/solid FPs.
+  const deepCoreOk =
+    deepScan &&
+    ((ls.pHash ?? 0) >= 0.74 ||
+      ((ls.pHash ?? 0) >= 0.7 &&
+        (ls.dHash ?? 0) >= 0.72 &&
+        (ls.blockHash ?? 0) >= 0.65) ||
+      ((ls.dHash ?? 0) >= 0.82 && (ls.blockHash ?? 0) >= 0.75));
+
+  if (
+    bestLocalScore >= floor &&
+    (band !== 'skip' || deepScan) &&
+    (quickCoreOk || deepCoreOk)
+  ) {
+    row.matched = true;
+    row.method = deepScan ? 'phash+deep' : 'phash';
+    row.finalScore = Math.max(row.finalScore, bestLocalScore);
+    row.score = row.finalScore;
+    return row;
+  }
+  row.matched = false;
+  return row;
+}
+
+/**
+ * Multi-candidate Jina with call budget + early stop.
+ */
+async function runMultiJina({
+  jina,
+  entry,
+  targetFps,
+  embedUnit,
+  jinaBudget,
+  dryRun,
+  threshold,
+}) {
+  let embeddingScore = null;
+  let calls = 0;
+  let bestCand = entry.best;
+
+  const targetEmbeddings = (targetFps.get(entry.target.targetId) || [])
+    .map((fp) => fp.embedding)
+    .filter((e) => e?.length);
+  if (!targetEmbeddings.length && entry.target.embedding?.length) {
+    targetEmbeddings.push(entry.target.embedding);
+  }
+  if (!targetEmbeddings.length || !jina.available) {
+    return { embeddingScore, calls, bestCand };
+  }
+
+  // Diversify: different frames + different variants, strongest local first.
+  const byKey = new Map();
+  for (const cand of [...entry.rows].sort(
+    (a, b) => b.local.localScore - a.local.localScore,
+  )) {
+    const frameKey = `f${cand.unit.frameIndex}`;
+    const variantKey = cand.unit.variantKey;
+    if (!byKey.has(frameKey)) byKey.set(frameKey, cand);
+    if (!byKey.has(variantKey)) byKey.set(`v:${variantKey}`, cand);
+  }
+  const diversified = [...byKey.values()];
+  // Prefer unique units.
+  const seen = new Set();
+  const topUnits = [];
+  for (const cand of [
+    ...diversified,
+    ...[...entry.rows].sort((a, b) => b.local.localScore - a.local.localScore),
+  ]) {
+    const id = `${cand.unit.frameIndex}:${cand.unit.variantKey}:${cand.unit.fingerprint.contentHash}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    topUnits.push(cand);
+    if (topUnits.length >= Math.min(5, jinaBudget.remaining)) break;
+  }
+
+  try {
+    for (const cand of topUnits) {
+      if (jinaBudget.remaining <= 0) break;
+      // Allow poor local scores during deep scan — edited targets.
+      if (
+        !dryRun &&
+        !cand.unit.deep &&
+        cand.local.localScore < LOCAL_SKIP_SIMILARITY * 0.7
+      ) {
+        continue;
+      }
+      const candEmb = await embedUnit(cand.unit);
+      jinaBudget.remaining -= 1;
+      calls += 1;
+      for (const tEmb of targetEmbeddings) {
+        const sim = cosineSimilarity(tEmb, candEmb);
+        if (embeddingScore == null || sim > embeddingScore) {
+          embeddingScore = sim;
+          bestCand = cand;
+        }
+      }
+      // Early stop when conclusive.
+      if (embeddingScore != null && embeddingScore >= Math.min(0.97, threshold + 0.05)) {
+        break;
+      }
+    }
+  } catch (err) {
+    log.warn('[image-target] Jina embed failed:', err.message);
+  }
+
+  return { embeddingScore, calls, bestCand };
+}
+
+async function scoreMediaAgainstTargets(guildId, buffer, {
+  meta = {},
+  dryRun = false,
+} = {}) {
+  const targets = await listTargets(guildId, { includeDisabled: false });
+  if (!targets.length) {
+    return {
+      match: null,
+      results: [],
+      message: 'No enabled targets in this server.',
+      mediaKind: null,
+      diagnostics: buildDeepScanDiagnostics(),
+    };
+  }
+
+  // ---- Quick scan ----------------------------------------------------------
+  const quick = await analyzeMediaUnits(buffer, meta, {
+    maxVariants: IMAGE_TARGET_MAX_VARIANTS,
+    deep: false,
+  });
+
+  let units = quick.units;
+  let mediaKind = quick.mediaKind;
+  const sourceContentHash = quick.sourceContentHash;
+  let framesSampled = quick.frameCount;
+  let framesDeepAnalyzed = 0;
+  let variantsAnalyzed = units.length;
+  let framesDeduped = quick.framesDeduped || 0;
+  let deepScan = false;
+  let escalateReason = null;
+  let jinaCalls = 0;
+
+  for (const t of targets) {
+    if (t.contentHash && t.contentHash === sourceContentHash) {
+      const threshold = await effectiveThreshold(guildId, t);
+      const row = {
+        target: t,
+        finalScore: 1,
+        score: 1,
+        method: 'exact',
+        localScore: 1,
+        localScores: {},
+        embeddingScore: null,
+        usedJina: false,
+        matched: true,
+        frameIndex: 0,
+        timestampSec: 0,
+        variantKey: 'original',
+        mediaKind,
+        threshold,
+        dHashDistance: 0,
+        blockHashDistance: 0,
+        deepScan: false,
+      };
+      row.methodLabel = describeMethod(row);
+      const diagnostics = buildDeepScanDiagnostics({
+        deepScan: false,
+        framesSampled,
+        variantsAnalyzed,
+        jinaCalls: 0,
+      });
+      row.diagnostics = diagnostics;
+      return {
+        match: row,
+        results: [row],
+        mediaKind,
+        sourceContentHash,
+        diagnostics,
+      };
+    }
+  }
+
+  const targetFps = new Map();
+  for (const t of targets) {
+    targetFps.set(t.targetId, await fingerprintsForTarget(guildId, t));
+  }
+
+  let ranked = scoreUnitsAgainstTargets(units, targets, targetFps);
   const jina = getJinaProvider();
-  /** cacheKey → embedding */
   const embeddingCache = new Map();
+  const jinaBudget = { remaining: IMAGE_TARGET_MAX_JINA_CALLS };
 
   async function embedUnit(unit) {
     const key = unit.fingerprint.contentHash;
@@ -364,23 +612,34 @@ async function scoreMediaAgainstTargets(guildId, buffer, {
     return emb;
   }
 
-  const results = [];
+  // Quick-pass decisions (may escalate).
+  const quickResults = [];
+  let needsDeep = false;
+  let deepReason = null;
 
   for (const entry of ranked) {
     const threshold =
       IMAGE_TARGET_EMBEDDING_THRESHOLD ??
       (await effectiveThreshold(guildId, entry.target));
-
     const bestLocalScore = entry.best.local.localScore;
     const band = classifyLocalEvidence(bestLocalScore);
 
-    // Soft skip: clearly unrelated AND not dry-run → omit from match path.
-    // Dry-run still reports scores.
     if (band === 'skip' && !dryRun) {
+      const esc = shouldEscalateToDeepScan({
+        band,
+        localScore: bestLocalScore,
+        localScores: entry.best.local.localScores,
+        matched: false,
+        mediaKind,
+        jinaAvailable: jina.available,
+      });
+      if (esc.escalate) {
+        needsDeep = true;
+        deepReason = deepReason || esc.reason;
+      }
       continue;
     }
 
-    // Obvious local match — no Jina required.
     if (band === 'obvious') {
       const row = buildEvidenceRow({
         target: entry.target,
@@ -389,60 +648,45 @@ async function scoreMediaAgainstTargets(guildId, buffer, {
         local: entry.best.local,
         threshold,
       });
-      row.matched = true;
-      row.methodLabel = describeMethod(row);
-      results.push(row);
-      continue;
+      const ls = entry.best.local.localScores || {};
+      // Guard flat-image false positives: require a core hash for "obvious".
+      row.matched =
+        (ls.pHash ?? 0) >= 0.7 ||
+        (ls.dHash ?? 0) >= 0.8 ||
+        (ls.blockHash ?? 0) >= 0.8;
+      if (!row.matched) {
+        // Fall through to candidate handling below by not continuing.
+      } else {
+        row.methodLabel = describeMethod(row);
+        quickResults.push(row);
+        continue;
+      }
     }
 
-    // Uncertain / candidate → try Jina when available.
+    // Candidate / uncertain: light Jina on quick pass (1–2 calls), then maybe deep.
     let embeddingScore = null;
-    const targetEmb =
-      entry.best.tfp.embedding ||
-      entry.target.embedding ||
-      null;
-
-    const shouldJina =
+    if (
       jina.available &&
-      targetEmb?.length &&
-      (band === 'candidate' || band === 'uncertain' || dryRun);
-
-    if (shouldJina) {
-      // Embed top-N units for this target (best local first), not every variant.
-      const topUnits = [...entry.rows]
-        .sort((a, b) => b.local.localScore - a.local.localScore)
-        .slice(0, 3);
-
-      // Also compare against all target embeddings in the fingerprint set.
-      const targetEmbeddings = (targetFps.get(entry.target.targetId) || [])
-        .map((fp) => fp.embedding)
-        .filter((e) => e?.length);
-      if (!targetEmbeddings.length && entry.target.embedding?.length) {
-        targetEmbeddings.push(entry.target.embedding);
-      }
-
-      try {
-        for (const cand of topUnits) {
-          // Skip embedding for units that are clearly unrelated locally
-          // unless dry-run wants more detail.
-          if (
-            !dryRun &&
-            cand.local.localScore < LOCAL_SKIP_SIMILARITY * 0.85
-          ) {
-            continue;
-          }
-          const candEmb = await embedUnit(cand.unit);
-          for (const tEmb of targetEmbeddings) {
-            const sim = cosineSimilarity(tEmb, candEmb);
-            if (embeddingScore == null || sim > embeddingScore) {
-              embeddingScore = sim;
-              entry.best = cand; // strongest embedding evidence unit
-            }
-          }
-        }
-      } catch (err) {
-        log.warn('[image-target] Jina embed failed:', err.message);
-      }
+      (entry.best.tfp.embedding?.length || entry.target.embedding?.length) &&
+      (band === 'candidate' || band === 'uncertain' || dryRun)
+    ) {
+      // Cap quick-pass Jina tightly; deep pass gets the rest.
+      const quickBudget = {
+        remaining: Math.min(2, jinaBudget.remaining),
+      };
+      const jr = await runMultiJina({
+        jina,
+        entry,
+        targetFps,
+        embedUnit,
+        jinaBudget: quickBudget,
+        dryRun,
+        threshold,
+      });
+      embeddingScore = jr.embeddingScore;
+      jinaCalls += jr.calls;
+      jinaBudget.remaining -= jr.calls;
+      if (jr.bestCand) entry.best = jr.bestCand;
     }
 
     const row = buildEvidenceRow({
@@ -453,42 +697,223 @@ async function scoreMediaAgainstTargets(guildId, buffer, {
       embeddingScore,
       threshold,
     });
-
-    if (embeddingScore != null) {
-      row.matched = row.finalScore >= threshold;
-    } else if (bestLocalScore >= LOCAL_OBVIOUS_SIMILARITY) {
-      row.matched = true;
-    } else if (
-      // No embedding available: still accept strong local ensemble hits so
-      // edited near-duplicates work without Jina.
-      bestLocalScore >= LOCAL_MATCH_WITHOUT_EMBEDDING &&
-      band !== 'skip'
-    ) {
-      const ls = entry.best.local.localScores || {};
-      // Require at least one core perceptual hash to agree — blocks
-      // edgeHash-only false positives on unrelated patterned media.
-      const coreOk = (ls.pHash ?? 0) >= 0.7 || (ls.dHash ?? 0) >= 0.75;
-      if (coreOk) {
-        row.matched = true;
-        row.method = 'phash';
-        row.finalScore = Math.max(row.finalScore, bestLocalScore);
-        row.score = row.finalScore;
-      } else {
-        row.matched = false;
-      }
-    } else {
-      row.matched = false;
-    }
-
+    decideMatch(row, { bestLocalScore, band, embeddingScore, threshold, deepScan: false });
     row.methodLabel = describeMethod(row);
-    results.push(row);
+    quickResults.push(row);
+
+    if (!row.matched) {
+      const esc = shouldEscalateToDeepScan({
+        band,
+        localScore: bestLocalScore,
+        localScores: entry.best.local.localScores,
+        matched: false,
+        mediaKind,
+        jinaAvailable: jina.available,
+        embeddingScore,
+        threshold,
+      });
+      if (esc.escalate) {
+        needsDeep = true;
+        deepReason = deepReason || esc.reason;
+      }
+    }
+  }
+
+  // If any quick match is conclusive, skip deep scan (keep it fast).
+  const quickMatch = pickStrongest(quickResults.filter((r) => r.matched));
+  if (quickMatch && quickMatch.finalScore >= (quickMatch.threshold ?? 0.9)) {
+    needsDeep = false;
+  }
+  // Dry-run: escalate top uncertain for diagnostics when no match.
+  if (dryRun && !quickMatch && ranked[0]) {
+    needsDeep = true;
+    deepReason = deepReason || 'dry_run_diagnostics';
+  }
+
+  let results = quickResults;
+
+  // ---- Deep scan -----------------------------------------------------------
+  if (needsDeep) {
+    deepScan = true;
+    escalateReason = deepReason || 'uncertain';
+    try {
+      const excludeFrameIndices = [
+        ...new Set(quick.frames.map((f) => f.frameIndex)),
+      ];
+      const excludeTimestamps = [
+        ...new Set(quick.frames.map((f) => f.timestampSec || 0)),
+      ];
+
+      const deep = await withTimeout(
+        analyzeMediaUnits(buffer, meta, {
+          deep: true,
+          maxVariants: IMAGE_TARGET_DEEP_MAX_VARIANTS,
+          sampleOpts: { excludeFrameIndices, excludeTimestamps },
+        }),
+        IMAGE_TARGET_DEEP_ANALYSIS_TIMEOUT_MS,
+      );
+
+      // Merge units (deep frames + re-analyze top quick frames with deep variants).
+      const deepUnits = deep.units;
+      framesDeepAnalyzed = deep.frameCount;
+      framesSampled += deep.frameCount;
+      framesDeduped += deep.framesDeduped || 0;
+
+      // Also generate deep variants for the strongest quick-scan frames.
+      const topQuickFrames = [];
+      const seenFi = new Set();
+      for (const r of ranked.slice(0, 2)) {
+        const fi = r.best.unit.frameIndex;
+        if (seenFi.has(fi)) continue;
+        seenFi.add(fi);
+        const frame = quick.frames.find((f) => f.frameIndex === fi);
+        if (frame) topQuickFrames.push(frame);
+      }
+      for (const frame of topQuickFrames) {
+        const variants = await generateVariants(frame.buffer, {
+          maxVariants: IMAGE_TARGET_DEEP_MAX_VARIANTS,
+          deep: true,
+        });
+        for (const variant of variants) {
+          // Skip keys already scored in quick pass for this frame.
+          if (
+            units.some(
+              (u) =>
+                u.frameIndex === frame.frameIndex &&
+                u.variantKey === variant.key,
+            )
+          ) {
+            continue;
+          }
+          const fp = await fingerprintImage(variant.buffer);
+          deepUnits.push({
+            mediaKind,
+            frameIndex: frame.frameIndex,
+            timestampSec: frame.timestampSec,
+            variantKey: variant.key,
+            buffer: variant.buffer,
+            fingerprint: fp,
+            sourceContentHash,
+            deep: true,
+          });
+        }
+      }
+
+      units = [...units, ...deepUnits];
+      variantsAnalyzed = units.length;
+      mediaKind = deep.mediaKind || mediaKind;
+      ranked = scoreUnitsAgainstTargets(units, targets, targetFps);
+
+      results = [];
+      for (const entry of ranked) {
+        const threshold =
+          IMAGE_TARGET_EMBEDDING_THRESHOLD ??
+          (await effectiveThreshold(guildId, entry.target));
+        const bestLocalScore = entry.best.local.localScore;
+        const band = classifyLocalEvidence(bestLocalScore);
+
+        if (band === 'skip' && !dryRun) {
+          // Deep pass: still allow Jina if preliminary relevance says edited.
+          const esc = shouldEscalateToDeepScan({
+            band,
+            localScore: bestLocalScore,
+            localScores: entry.best.local.localScores,
+            matched: false,
+            mediaKind,
+            jinaAvailable: jina.available,
+          });
+          if (!esc.escalate) continue;
+        }
+
+        if (band === 'obvious') {
+          const row = buildEvidenceRow({
+            target: entry.target,
+            unit: entry.best.unit,
+            targetFp: entry.best.tfp,
+            local: entry.best.local,
+            threshold,
+            deepScan: true,
+          });
+          const ls = entry.best.local.localScores || {};
+          row.matched =
+            (ls.pHash ?? 0) >= 0.7 ||
+            (ls.dHash ?? 0) >= 0.8 ||
+            (ls.blockHash ?? 0) >= 0.8;
+          if (row.matched) {
+            row.methodLabel = describeMethod(row);
+            results.push(row);
+            continue;
+          }
+        }
+
+        let embeddingScore = null;
+        if (
+          jina.available &&
+          (entry.best.tfp.embedding?.length || entry.target.embedding?.length) &&
+          jinaBudget.remaining > 0
+        ) {
+          const jr = await runMultiJina({
+            jina,
+            entry,
+            targetFps,
+            embedUnit,
+            jinaBudget,
+            dryRun: true, // allow poor local during deep
+            threshold,
+          });
+          embeddingScore = jr.embeddingScore;
+          jinaCalls += jr.calls;
+          if (jr.bestCand) entry.best = jr.bestCand;
+        }
+
+        const row = buildEvidenceRow({
+          target: entry.target,
+          unit: entry.best.unit,
+          targetFp: entry.best.tfp,
+          local: entry.best.local,
+          embeddingScore,
+          threshold,
+          deepScan: true,
+        });
+        decideMatch(row, {
+          bestLocalScore: entry.best.local.localScore,
+          band: classifyLocalEvidence(entry.best.local.localScore),
+          embeddingScore,
+          threshold,
+          deepScan: true,
+        });
+        row.methodLabel = describeMethod(row);
+        results.push(row);
+      }
+    } catch (err) {
+      if (String(err.message || err).includes('timeout')) {
+        log.warn('[image-target] deep scan timeout — using quick-scan results');
+        escalateReason = `${escalateReason || 'deep'}+timeout`;
+        results = quickResults;
+      } else {
+        log.warn('[image-target] deep scan failed:', err.message);
+        results = quickResults;
+      }
+    }
   }
 
   results.sort((a, b) => (b.finalScore ?? 0) - (a.finalScore ?? 0));
+  const diagnostics = buildDeepScanDiagnostics({
+    deepScan,
+    reason: escalateReason,
+    framesSampled,
+    framesDeepAnalyzed,
+    variantsAnalyzed,
+    jinaCalls,
+    framesDeduped,
+  });
+
   for (const row of results) {
-    // Backward-compatible alias used by actions / older callers.
     row.score = row.finalScore;
+    row.diagnostics = diagnostics;
+    row.deepScan = deepScan;
   }
+
   const top = pickStrongest(results.filter((r) => r.matched)) || null;
 
   return {
@@ -497,13 +922,10 @@ async function scoreMediaAgainstTargets(guildId, buffer, {
     mediaKind,
     sourceContentHash,
     jinaAvailable: jina.available,
+    diagnostics,
   };
 }
 
-/**
- * Compare a candidate media buffer against all enabled targets in a guild.
- * @returns {null | object} strongest match above threshold, or null
- */
 export async function matchAgainstTargets(guildId, buffer, opts = {}) {
   try {
     const report = await withTimeout(
@@ -511,7 +933,7 @@ export async function matchAgainstTargets(guildId, buffer, opts = {}) {
         meta: opts.meta || {},
         dryRun: false,
       }),
-      IMAGE_TARGET_ANALYSIS_TIMEOUT_MS,
+      IMAGE_TARGET_DEEP_ANALYSIS_TIMEOUT_MS,
     );
     return report.match || null;
   } catch (err) {
@@ -523,10 +945,6 @@ export async function matchAgainstTargets(guildId, buffer, opts = {}) {
   }
 }
 
-/**
- * Dry-run compare for /image-target test — returns strongest scores even
- * when below threshold (so admins can tune).
- */
 export async function testAgainstTargets(guildId, buffer, opts = {}) {
   try {
     const report = await withTimeout(
@@ -534,22 +952,28 @@ export async function testAgainstTargets(guildId, buffer, opts = {}) {
         meta: opts.meta || {},
         dryRun: true,
       }),
-      IMAGE_TARGET_ANALYSIS_TIMEOUT_MS,
+      IMAGE_TARGET_DEEP_ANALYSIS_TIMEOUT_MS,
     );
 
     if (!report.results?.length && report.message) {
-      return { match: false, results: [], message: report.message };
+      return {
+        match: false,
+        results: [],
+        message: report.message,
+        diagnostics: report.diagnostics,
+      };
     }
 
-    const top = report.results[0] || null;
+    const top = report.match || report.results[0] || null;
     return {
       match: Boolean(report.match),
       results: report.results,
-      top: report.match || top,
+      top,
       jinaAvailable: report.jinaAvailable,
       jinaError: null,
       mediaKind: report.mediaKind,
-      reportText: formatTestResult(report.match || top),
+      diagnostics: report.diagnostics,
+      reportText: formatTestResult(top, report.diagnostics),
       fingerprint: top
         ? {
             localScore: top.localScore,
@@ -565,16 +989,21 @@ export async function testAgainstTargets(guildId, buffer, opts = {}) {
         results: [],
         message: 'Analysis timed out — try a smaller file.',
         jinaAvailable: getJinaProvider().available,
+        diagnostics: buildDeepScanDiagnostics({
+          deepScan: true,
+          reason: 'timeout',
+        }),
       };
     }
     throw err;
   }
 }
 
-// Re-export helpers useful for tests / debugging.
 export {
   classifyLocalEvidence,
   describeMethod,
   formatTestResult,
   localSimilarity,
+  shouldEscalateToDeepScan,
+  buildDeepScanDiagnostics,
 };

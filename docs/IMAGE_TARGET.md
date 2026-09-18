@@ -1,4 +1,4 @@
-# Image Target Watcher (V2)
+# Image Target Watcher (V2.1)
 
 Lightweight add-on for DarkNight Home Theater. Admins upload a **target image**;
 the bot watches chosen channels and reacts when someone posts a visually similar
@@ -6,45 +6,56 @@ image, GIF frame, video frame, custom emoji, or sticker.
 
 This is **not** a full moderation suite — just focused visual matching.
 
-## How matching works (V2)
+## How matching works (V2.1 Adaptive Deep Detection)
 
 ```
 MEDIA POSTED (image / GIF / APNG / video / emoji / sticker / URL)
     ↓
-Media sampler (multi-frame for GIF/video; first+last+spaced)
-    ↓
-Variant normalizer (crop / grayscale / flip / contrast / letterbox)
-    ↓
-Multi-fingerprint ensemble (dHash + aHash + pHash + blockHash + edge)
-    ↓
-Local similarity ranking (soft gate — NOT a hard reject)
-   ↙                    ↘
-obvious local         uncertain / edited
-   ↓                       ↓
- MATCH                 Jina CLIP (optional)
-                           ↓
-                    cosine similarity
-                           ↓
-                     MATCH / NO MATCH
+Quick scan (bounded frames + variants + multi-hash ensemble)
+   ↙                    ↘                    ↘
+obvious local         clearly unrelated      uncertain / suspicious
+   ↓                       ↓                       ↓
+ MATCH                 NO MATCH              DEEP SCAN
+                                               ↓
+                                    denser GIF/video sampling
+                                    deep variants (screenshot /
+                                    caption / recolor / crop…)
+                                    multi-candidate Jina (optional)
+                                               ↓
+                                         MATCH / NO MATCH
     ↓
 Strongest frame/variant score wins → existing moderation action
 ```
 
-1. **Multi-frame sampling** — GIFs/APNGs/videos sample across the duration
-   (beginning, middle, end). A match on **any** sampled frame counts.
-2. **Multi-variant normalization** — center crops, grayscale, flip, mild
-   rotation, caption-strip crops improve resistance to borders/captions/edits.
-3. **Local hash ensemble** — ranks candidates cheaply. Soft thresholds skip
-   clearly unrelated media; edited near-duplicates still reach Jina (or match
-   locally when Jina is offline).
-4. **Jina `jina-clip-v2` embeddings** (optional) — for the uncertain band.
-   Cosine similarity of L2-normalized vectors, score in `[0, 1]`.
+1. **Quick scan first** — Normal uploads stay fast. Bounded frame sampling,
+   a small variant set, and the local hash ensemble decide obvious matches and
+   clear misses without deep work.
+2. **Adaptive deep scan** — Only when the quick pass is uncertain or
+   preliminary relevance still looks suspicious (heavily edited / screenshot /
+   mid-GIF / between video samples). Deep scan raises frame/variant budgets,
+   densifies GIF/video sampling, and may call Jina on several strongest
+   candidates.
+3. **Multi-frame sampling** — GIFs/APNGs/videos sample across the duration.
+   Deep pass prioritizes first/mid/last + evenly spaced frames, dedupes near-
+   identical frames, and keeps the strongest match index/timestamp.
+4. **Edit / screenshot resistance** — Deep variants cover borders, letterbox,
+   captions, recompression, grayscale, brightness, mirror, crops, mild blur /
+   rotate — capped by `IMAGE_TARGET_DEEP_MAX_VARIANTS` (no combinatorial blow-up).
+5. **Soft local gates** — Low perceptual-hash scores do **not** hard-reject.
+   “Clearly unrelated” vs “heavily edited” are distinguished; Jina can still
+   run after an inexpensive relevance check.
+6. **Jina `jina-clip-v2`** (optional) — Multi-candidate embeddings during deep
+   scan, cached by content hash, capped per media item, early-stop when
+   conclusive.
+7. **Magic-byte fallbacks** — Missing/misleading MIME or extension is sniffed
+   from container bytes; decode failures log and fail safe (watcher does not crash).
 
 **Similarity score:** strongest evidence across frames/variants. Default
 embedding threshold `0.90`. Without `JINA_API_KEY`, strong local ensemble hits
-still match.
+(and deep-scan core-hash hits) still match.
 
 V1 targets (single hash row) keep working via a legacy fingerprint synthesis.
+Guild isolation is unchanged.
 
 ## Fast setup
 
@@ -79,7 +90,7 @@ Opens an ephemeral **Image Target Hub** (no slash subcommand maze):
 | **Add image** | Discord file picker modal — attach image/GIF/video |
 | **Watch this channel** | Arm live matching in the channel you ran the command in |
 | **Unwatch this channel** | Stop watching this channel |
-| **Test image** | Dry-run match with V2 score breakdown (no delete / no punish) |
+| **Test image** | Dry-run match with V2.1 diagnostics (no delete / no punish) |
 | **Set action** | Pick what happens on a match |
 | **Remove target** | Delete a saved target |
 | **Refresh** | Reload status + gallery |
@@ -109,18 +120,25 @@ Targets are **guild-scoped** — Guild A never affects Guild B.
 1. `/image-target` → **Add image** (or attach on the slash command).
 2. **Watch this channel**.
 3. Confirm status shows **ARMED**.
-4. Optionally **Test image** to see V2 scores (frame/timestamp/variant/local/Jina).
+4. Optionally **Test image** to see V2.1 diagnostics: media type, final score,
+   decision, method, matching frame/timestamp/variant, local + Jina scores,
+   deep scan YES/NO, frames/variants analyzed, Jina calls, escalation reason.
 
-## Optional V2 env knobs
+## Optional env knobs
 
-Safe defaults — usually leave unset:
+Safe defaults — usually leave unset. Quick path stays fast; deep budgets apply
+only on escalation:
 
 ```
 IMAGE_TARGET_MAX_FRAMES=10
+IMAGE_TARGET_DEEP_MAX_FRAMES=18
 IMAGE_TARGET_VIDEO_SAMPLE_COUNT=8
 IMAGE_TARGET_MAX_MEDIA_PER_MESSAGE=12
 IMAGE_TARGET_MAX_VARIANTS=9
+IMAGE_TARGET_DEEP_MAX_VARIANTS=14
+IMAGE_TARGET_MAX_JINA_CALLS=6
 IMAGE_TARGET_ANALYSIS_TIMEOUT_MS=25000
+IMAGE_TARGET_DEEP_ANALYSIS_TIMEOUT_MS=35000
 IMAGE_TARGET_FFMPEG_TIMEOUT_MS=15000
 IMAGE_TARGET_CONCURRENCY=2
 IMAGE_TARGET_EMBEDDING_THRESHOLD=0.9
@@ -132,9 +150,15 @@ IMAGE_TARGET_EMBEDDING_THRESHOLD=0.9
 npm run test:image-target
 ```
 
-## Limits
+Covers V1 hub/SSRF/guild isolation, V2 multi-frame/edit paths, and V2.1
+adaptive deep scan (mid/late GIF, interstitial video, screenshot/caption/
+mirror/recompress edits, MIME fallbacks, budgets, Jina-unavailable, etc.).
 
-- Not 100% detection — heavy adversarial edits, tiny crops of a large collage,
-  or targets buried in long videos beyond the sample budget can still slip.
+## Limits / known limitations
+
+- Not 100% detection — extreme adversarial edits, tiny crops of a large collage,
+  or targets buried outside deep-sample budgets can still slip.
+- Deep scan improves common Discord evasion (screenshot + border + caption +
+  JPEG recompress) but stays bounded; it will not explode CPU/API spend.
 - FFmpeg must be available for video (Railway/Nixpacks already installs it).
-- Download SSRF protections, size limits, and timeouts still apply.
+- Download SSRF protections, size limits, redirects, and timeouts still apply.
