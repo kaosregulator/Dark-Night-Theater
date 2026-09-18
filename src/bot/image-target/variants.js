@@ -292,6 +292,147 @@ export async function generateVariants(buffer, {
           .resize({ width: 768, height: 768, fit: 'inside' }),
       );
     }
+
+    // --- V3 forensic deep transforms (still hard-capped) --------------------
+
+    // Large rotations (deliberate evasion).
+    for (const deg of [90, 180, 270, -15, 15]) {
+      await push(
+        `rotate-${deg}`,
+        sharp(buffer, { animated: false, failOn: 'none' })
+          .rotate(deg, { background: { r: 0, g: 0, b: 0, alpha: 1 } })
+          .resize({ width: 640, height: 640, fit: 'inside' }),
+      );
+    }
+
+    // Vertical flip.
+    await push(
+      'flip-v',
+      sharp(buffer, { animated: false, failOn: 'none' })
+        .rotate()
+        .flip()
+        .resize({ width: 768, height: 768, fit: 'inside', withoutEnlargement: true }),
+    );
+
+    // Color destruction suite.
+    await push(
+      'negate',
+      sharp(buffer, { animated: false, failOn: 'none' })
+        .rotate()
+        .negate({ alpha: false })
+        .greyscale()
+        .normalize()
+        .resize({ width: 640, height: 640, fit: 'inside', withoutEnlargement: true }),
+    );
+
+    await push(
+      'high-contrast',
+      sharp(buffer, { animated: false, failOn: 'none' })
+        .rotate()
+        .linear(1.6, -(128 * 0.6))
+        .normalize()
+        .resize({ width: 640, height: 640, fit: 'inside', withoutEnlargement: true }),
+    );
+
+    await push(
+      'low-contrast',
+      sharp(buffer, { animated: false, failOn: 'none' })
+        .rotate()
+        .linear(0.55, 60)
+        .resize({ width: 640, height: 640, fit: 'inside', withoutEnlargement: true }),
+    );
+
+    await push(
+      'hue-shift',
+      sharp(buffer, { animated: false, failOn: 'none' })
+        .rotate()
+        .modulate({ hue: 40, saturation: 1.3, brightness: 1.05 })
+        .resize({ width: 640, height: 640, fit: 'inside', withoutEnlargement: true }),
+    );
+
+    await push(
+      'brightness-up',
+      sharp(buffer, { animated: false, failOn: 'none' })
+        .rotate()
+        .modulate({ brightness: 1.35, saturation: 0.7 })
+        .normalize()
+        .resize({ width: 640, height: 640, fit: 'inside', withoutEnlargement: true }),
+    );
+
+    // Blur / noise / pixelation resilience.
+    await push(
+      'blur-strong',
+      sharp(buffer, { animated: false, failOn: 'none' })
+        .rotate()
+        .blur(2.4)
+        .normalize()
+        .resize({ width: 640, height: 640, fit: 'inside', withoutEnlargement: true }),
+    );
+
+    await push(
+      'jpeg-heavy',
+      sharp(buffer, { animated: false, failOn: 'none' })
+        .rotate()
+        .resize({ width: 480, height: 480, fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 25, mozjpeg: true }),
+    );
+
+    await push(
+      'pixelate',
+      sharp(buffer, { animated: false, failOn: 'none' })
+        .rotate()
+        .resize(48, 48, { fit: 'fill' })
+        .resize(512, 512, { fit: 'fill', kernel: 'nearest' }),
+    );
+
+    // Perspective / deskew approximation (stronger keystone).
+    if (width >= 64 && height >= 64) {
+      await push(
+        'perspective-deskew',
+        sharp(buffer, { animated: false, failOn: 'none' })
+          .rotate(-5, { background: { r: 0, g: 0, b: 0, alpha: 1 } })
+          .extract({
+            left: Math.floor(width * 0.1),
+            top: Math.floor(height * 0.08),
+            width: Math.max(8, Math.floor(width * 0.8)),
+            height: Math.max(8, Math.floor(height * 0.84)),
+          })
+          .affine(
+            [1.05, 0.04, 0.03, 1.02],
+            { background: { r: 0, g: 0, b: 0, alpha: 1 } },
+          )
+          .normalize()
+          .resize({ width: 512, height: 512, fit: 'cover' }),
+      );
+    }
+
+    // Partial zoom (crop 50% center).
+    if (width >= 64 && height >= 64) {
+      const left = Math.floor(width * 0.25);
+      const top = Math.floor(height * 0.25);
+      await push(
+        'zoom-50',
+        sharp(buffer, { animated: false, failOn: 'none' })
+          .rotate()
+          .extract({
+            left,
+            top,
+            width: Math.max(8, width - left * 2),
+            height: Math.max(8, height - top * 2),
+          })
+          .normalize()
+          .resize({ width: 640, height: 640, fit: 'inside' }),
+      );
+    }
+
+    // Stretch (aspect ratio attack).
+    await push(
+      'stretch-wide',
+      sharp(buffer, { animated: false, failOn: 'none' })
+        .rotate()
+        .resize({ width: 768, height: 432, fit: 'fill' })
+        .resize({ width: 640, height: 640, fit: 'inside' }),
+    );
   }
 
   if (!variants.length) {

@@ -213,6 +213,7 @@ export function buildDeepScanDiagnostics({
   variantsAnalyzed = 0,
   jinaCalls = 0,
   framesDeduped = 0,
+  regionsAnalyzed = 0,
 } = {}) {
   return {
     deepScan: Boolean(deepScan),
@@ -222,5 +223,6 @@ export function buildDeepScanDiagnostics({
     variantsAnalyzed,
     jinaCalls,
     framesDeduped,
+    regionsAnalyzed,
   };
 }
