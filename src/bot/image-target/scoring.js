@@ -14,6 +14,8 @@ export function scoreFingerprintPair(candidateFp, targetFp) {
   return {
     localScore: local.score,
     localScores: local.scores,
+    featureScore: local.featureScore || 0,
+    featureMatches: local.featureMatches || 0,
     dHashDistance: local.scores.dHash > 0
       ? Math.round((1 - local.scores.dHash) * 64)
       : null,
@@ -108,6 +110,22 @@ export function formatTestResult(row, diagnostics = null) {
   if (ls.aHash != null) lines.push(`aHash: ${ls.aHash.toFixed(2)}`);
   if (ls.blockHash != null) lines.push(`Block: ${ls.blockHash.toFixed(2)}`);
   if (ls.edgeHash != null) lines.push(`Edge: ${ls.edgeHash.toFixed(2)}`);
+  if (ls.colorHash != null) lines.push(`Color: ${ls.colorHash.toFixed(2)}`);
+  if (ls.pdqHash != null) lines.push(`PDQ: ${ls.pdqHash.toFixed(2)}`);
+  if (ls.features != null) lines.push(`ORB features: ${ls.features.toFixed(2)}`);
+  if (row.featureMatches != null) lines.push(`ORB matches: ${row.featureMatches}`);
+  if (row.contentOverlap != null) {
+    lines.push(`Content overlap: ${(row.contentOverlap * 100).toFixed(0)}%`);
+  }
+  if (row.sequenceScore != null) {
+    lines.push(`Sequence: ${row.sequenceScore.toFixed(2)} (${row.sequenceMatches || 0} hits)`);
+  }
+  if (row.videoHashScore != null) {
+    lines.push(`VideoHash: ${row.videoHashScore.toFixed(2)}`);
+  }
+  if (row.mirrorScore != null) {
+    lines.push(`Mirror: ${row.mirrorScore.toFixed(2)}`);
+  }
   lines.push('');
   lines.push('Jina:');
   lines.push(
@@ -122,6 +140,9 @@ export function formatTestResult(row, diagnostics = null) {
   }
   if (diag.variantsAnalyzed != null) {
     lines.push(`Variants Analyzed: ${diag.variantsAnalyzed}`);
+  }
+  if (diag.regionsAnalyzed != null) {
+    lines.push(`Regions Analyzed: ${diag.regionsAnalyzed}`);
   }
   if (diag.jinaCalls != null) lines.push(`Jina Calls: ${diag.jinaCalls}`);
   if (diag.framesDeduped) lines.push(`Frames Deduped: ${diag.framesDeduped}`);

@@ -1,19 +1,26 @@
 import sharp from 'sharp';
 import { createHash } from 'node:crypto';
 import { BLOCKHASH_BITS, IMAGE_TARGET_HASH_EDGE } from './constants.js';
+import { computeColorHash } from './color-hash.js';
+import {
+  extractLocalFeatures,
+  matchLocalFeatures,
+  serializeFeatures,
+  deserializeFeatures,
+} from './features.js';
+import { computePdqHash } from './pdq.js';
 
 /**
- * Multi-fingerprint module (Image Target V2).
+ * Multi-fingerprint module (Image Target V2 / V3).
  *
  * Ensemble:
- *   - dHash  (64-bit difference hash)
- *   - aHash  (64-bit average hash)
- *   - pHash  (64-bit DCT perceptual hash)
- *   - blockHash (256-bit block mean hash)
- *   - edgeHash (64-bit gradient/edge fingerprint)
+ *   - dHash / aHash / pHash / blockHash / edgeHash (V2)
+ *   - colorHash / PDQ / local ORB features (V3)
  *
  * No single hash is authoritative — localSimilarity() blends them.
  */
+
+export { serializeFeatures, deserializeFeatures, matchLocalFeatures };
 
 /** Decode image bytes to raw RGBA (first frame for GIF/animated unless pages set). */
 export async function decodeRgba(buffer, { maxEdge = IMAGE_TARGET_HASH_EDGE, page } = {}) {
@@ -309,14 +316,17 @@ export function hammingSimilarity(hexA, hexB) {
 /**
  * Compute the full fingerprint suite for an image buffer.
  * Returns hashes + dimensions + contentHash.
+ * @param {{ withFeatures?: boolean }} [opts] — ORB features (costlier; deep/storage)
  */
-export async function fingerprintImage(buffer) {
+export async function fingerprintImage(buffer, { withFeatures = false } = {}) {
   const rgba = await decodeRgba(buffer, { maxEdge: IMAGE_TARGET_HASH_EDGE });
-  const [dHash, aHash, pHash, edgeHash] = await Promise.all([
+  const [dHash, aHash, pHash, edgeHash, colorHash, pdqHash] = await Promise.all([
     computeDHash(buffer),
     computeAHash(buffer),
     computePHash(buffer),
     computeEdgeHash(buffer),
+    computeColorHash(buffer),
+    computePdqHash(buffer),
   ]);
   const blockHash = computeBlockHashFromRgba(
     rgba.data,
@@ -324,12 +334,25 @@ export async function fingerprintImage(buffer) {
     rgba.height,
     BLOCKHASH_BITS,
   );
+  let features = null;
+  let featuresJson = null;
+  if (withFeatures) {
+    try {
+      features = await extractLocalFeatures(buffer);
+      featuresJson = serializeFeatures(features);
+    } catch {
+      features = null;
+    }
+  }
   return {
     dHash,
     aHash,
     pHash,
     blockHash,
     edgeHash,
+    colorHash,
+    pdqHash,
+    features: featuresJson,
     contentHash: contentHash(buffer),
     width: rgba.width,
     height: rgba.height,
@@ -348,16 +371,20 @@ export function localSimilarity(a, b) {
     pHash: hammingSimilarity(a?.pHash, b?.pHash),
     blockHash: hammingSimilarity(a?.blockHash, b?.blockHash),
     edgeHash: hammingSimilarity(a?.edgeHash, b?.edgeHash),
+    colorHash: hammingSimilarity(a?.colorHash, b?.colorHash),
+    pdqHash: hammingSimilarity(a?.pdqHash, b?.pdqHash),
   };
 
   // Weight available hashes. Missing hashes (V1 targets without aHash/pHash/edge)
-  // simply drop out of the average.
+  // simply drop out of the average. colorHash is lighter (evades grayscale).
   const weights = {
     dHash: 1.0,
     aHash: 0.85,
     pHash: 1.1,
     blockHash: 1.0,
     edgeHash: 0.75,
+    colorHash: 0.55,
+    pdqHash: 1.15,
   };
 
   let total = 0;
@@ -379,11 +406,28 @@ export function localSimilarity(a, b) {
     present.push(s);
   }
 
+  // Local feature matching (ORB-style) when both sides have descriptors.
+  let featureScore = 0;
+  let featureMatches = 0;
+  const fa = deserializeFeatures(a?.features);
+  const fb = deserializeFeatures(b?.features);
+  if (fa && fb) {
+    const fm = matchLocalFeatures(fa, fb);
+    featureScore = fm.score;
+    featureMatches = fm.matches;
+    scores.features = featureScore;
+    if (featureScore > 0) {
+      total += featureScore * 1.2;
+      wsum += 1.2;
+      present.push(featureScore);
+    }
+  }
+
   const weighted = wsum > 0 ? total / wsum : 0;
   // Robust fallback only when several *core* channels agree — aHash/edgeHash
   // alone are too easy to spoof with flat/solid images.
   present.sort((x, y) => y - x);
-  const coreKeys = ['dHash', 'pHash', 'blockHash'];
+  const coreKeys = ['dHash', 'pHash', 'blockHash', 'pdqHash'];
   const coreStrong = coreKeys.filter((k) => {
     const aHas = k === 'dHash'
       ? Boolean(a?.dHash || a?.perceptualHash)
@@ -397,11 +441,23 @@ export function localSimilarity(a, b) {
     present.length >= 2
       ? (present[0] + present[1]) / 2
       : present[0] || 0;
-  const score =
+  let score =
     coreStrong >= 2
       ? Math.max(weighted, top2 * 0.98)
       : weighted;
-  return { score, scores, weighted, top2, strongCount: coreStrong };
+  // Strong ORB agreement can lift partial/cropped cases.
+  if (featureMatches >= 12 && featureScore >= 0.55) {
+    score = Math.max(score, featureScore);
+  }
+  return {
+    score,
+    scores,
+    weighted,
+    top2,
+    strongCount: coreStrong,
+    featureScore,
+    featureMatches,
+  };
 }
 
 /**

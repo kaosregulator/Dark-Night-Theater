@@ -176,8 +176,8 @@ export const IMAGE_TARGET_DEEP_MAX_FRAMES = envInt(
 /** Deep-scan variant cap per frame (extra crop/color/screenshot transforms). */
 export const IMAGE_TARGET_DEEP_MAX_VARIANTS = envInt(
   'IMAGE_TARGET_DEEP_MAX_VARIANTS',
-  14,
-  { min: 4, max: 24 },
+  20,
+  { min: 4, max: 32 },
 );
 
 /** Max Jina embedding calls per media item (quick + deep combined). */
@@ -208,6 +208,46 @@ export const FRAME_DEDUP_HAMMING = envInt('IMAGE_TARGET_FRAME_DEDUP_HAMMING', 4,
   min: 0,
   max: 16,
 });
+
+// ---- Image Target V3 forensic budgets ------------------------------------
+
+/** Enable ORB-style local features during deep scan / storage (1=on). */
+export const IMAGE_TARGET_FEATURES_ENABLED = envInt('IMAGE_TARGET_FEATURES', 1, {
+  min: 0,
+  max: 1,
+}) === 1;
+
+/** Max collage/region tiles analyzed during deep scan. */
+export const IMAGE_TARGET_MAX_REGIONS = envInt('IMAGE_TARGET_MAX_REGIONS', 14, {
+  min: 4,
+  max: 24,
+});
+
+/** Max adaptive crops during deep recursive crop search. */
+export const IMAGE_TARGET_MAX_ADAPTIVE_CROPS = envInt(
+  'IMAGE_TARGET_MAX_ADAPTIVE_CROPS',
+  12,
+  { min: 4, max: 24 },
+);
+
+/** Top-K targets from embedding ANN before expensive forensic matching. */
+export const IMAGE_TARGET_VECTOR_TOP_K = envInt('IMAGE_TARGET_VECTOR_TOP_K', 10, {
+  min: 3,
+  max: 50,
+});
+
+/** Min ORB matches to treat local features as strong evidence. */
+export const IMAGE_TARGET_FEATURE_MIN_MATCHES = envInt(
+  'IMAGE_TARGET_FEATURE_MIN_MATCHES',
+  12,
+  { min: 4, max: 48 },
+);
+
+/** Partial-overlap score floor for "likely target match" reporting. */
+export const IMAGE_TARGET_PARTIAL_OVERLAP_FLOOR = envFloat(
+  'IMAGE_TARGET_PARTIAL_OVERLAP',
+  0.62,
+);
 
 /** Supported still-image MIME / extensions. */
 export const IMAGE_MIME = new Set([
