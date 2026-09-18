@@ -1,7 +1,8 @@
 /**
  * Image Target Watcher — public entry points.
  *
- * Two-stage detection: local pHash → optional Jina CLIP embeddings.
+ * V2: multi-frame sampling → multi-variant normalization → multi-hash ensemble
+ * → soft local ranking → optional Jina CLIP → score aggregation → action.
  * Guild-scoped targets, channel allow-list, configurable actions.
  */
 
@@ -26,12 +27,15 @@ export {
   getGuildConfig,
   patchGuildConfig,
   isChannelWatched,
+  listTargetFingerprints,
+  replaceTargetFingerprints,
 } from './store.js';
 
 export {
   analyzeTargetBuffer,
   matchAgainstTargets,
   testAgainstTargets,
+  persistTargetFingerprints,
 } from './detector.js';
 
 export { getJinaProvider } from './providers/jina.js';

@@ -216,7 +216,9 @@ export function looksLikeVideo({ contentType, filename, url } = {}) {
 }
 
 /**
- * Extract a still JPEG frame from a video buffer via ffmpeg.
+ * Extract a still JPEG frame from a video buffer via ffmpeg (first frame).
+ * Kept for hub previews / backward compatibility. Live matching uses the
+ * V2 multi-frame sampler in sampler.js instead.
  * Returns null if ffmpeg fails (caller should skip).
  */
 export async function extractVideoFrame(videoBuffer) {
@@ -246,8 +248,9 @@ export async function extractVideoFrame(videoBuffer) {
 }
 
 /**
- * Normalize any supported media into image bytes for hashing/embedding.
- * - images/gifs → as-is (sharp reads first GIF frame)
+ * Normalize any supported media into a single still image for previews.
+ * Live detection uses sampleMediaFrames() for multi-frame analysis.
+ * - images/gifs → as-is (sharp reads first GIF frame when fingerprinted)
  * - videos → first frame via ffmpeg
  */
 export async function loadMediaAsImage(buffer, meta = {}) {

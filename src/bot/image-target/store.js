@@ -77,6 +77,30 @@ function mapTargetRow(row) {
     enabled: Boolean(row.enabled),
     previewJpeg: row.preview_jpeg || null,
     sourceUrl: row.source_url || null,
+    fingerprintVersion: Number(row.fingerprint_version ?? 1),
+  };
+}
+
+function mapFingerprintRow(row) {
+  if (!row) return null;
+  let embedding = row.embedding;
+  if (typeof embedding === 'string') {
+    try { embedding = JSON.parse(embedding); } catch { embedding = null; }
+  }
+  return {
+    fingerprintId: row.fingerprint_id,
+    guildId: row.guild_id,
+    targetId: row.target_id,
+    frameIndex: Number(row.frame_index ?? 0),
+    variantKey: row.variant_key || 'original',
+    dHash: row.d_hash || null,
+    aHash: row.a_hash || null,
+    pHash: row.p_hash || null,
+    blockHash: row.block_hash || null,
+    edgeHash: row.edge_hash || null,
+    embedding,
+    contentHash: row.content_hash || null,
+    timestampMs: row.timestamp_ms == null ? 0 : Number(row.timestamp_ms),
   };
 }
 
@@ -186,13 +210,19 @@ export async function addTarget(guildId, {
   mediaKind = 'image',
   previewJpeg = null,
   sourceUrl = null,
+  fingerprintVersion = 2,
+  fingerprints = null,
 }) {
   if (useMemory()) {
-    return memory.addTarget(guildId, {
+    const target = await memory.addTarget(guildId, {
       name, perceptualHash, blockHash, embedding, embeddingModel,
       contentHash, mimeType, createdBy, threshold, mediaKind,
-      previewJpeg, sourceUrl,
+      previewJpeg, sourceUrl, fingerprintVersion,
     });
+    if (fingerprints?.length) {
+      await memory.replaceTargetFingerprints(guildId, target.targetId, fingerprints);
+    }
+    return target;
   }
 
   return withClient(async (client) => {
@@ -203,11 +233,13 @@ export async function addTarget(guildId, {
       `INSERT INTO image_targets (
          target_id, guild_id, name, perceptual_hash, block_hash,
          embedding, embedding_model, content_hash, mime_type, media_kind,
-         similarity_threshold, created_by, enabled, preview_jpeg, source_url
+         similarity_threshold, created_by, enabled, preview_jpeg, source_url,
+         fingerprint_version
        ) VALUES (
          $1,$2,$3,$4,$5,
          $6::jsonb,$7,$8,$9,$10,
-         $11,$12, TRUE, $13, $14
+         $11,$12, TRUE, $13, $14,
+         $15
        )
        RETURNING *`,
       [
@@ -225,10 +257,89 @@ export async function addTarget(guildId, {
         createdBy,
         previewJpeg,
         sourceUrl,
+        fingerprintVersion ?? 2,
       ],
     );
-    return mapTargetRow(res.rows[0]);
+    const target = mapTargetRow(res.rows[0]);
+    if (fingerprints?.length) {
+      await replaceTargetFingerprints(guildId, target.targetId, fingerprints, client);
+    }
+    return target;
   });
+}
+
+export async function listTargetFingerprints(guildId, targetId) {
+  if (useMemory()) return memory.listTargetFingerprints(guildId, targetId);
+
+  const res = await query(
+    `SELECT * FROM image_target_fingerprints
+     WHERE guild_id = $1 AND target_id = $2
+     ORDER BY frame_index ASC, variant_key ASC`,
+    [guildId, targetId],
+  );
+  return res.rows.map(mapFingerprintRow);
+}
+
+/**
+ * Replace the full fingerprint set for a target (guild-scoped).
+ * @param {object} [client] optional pg client for transactional inserts
+ */
+export async function replaceTargetFingerprints(guildId, targetId, fingerprints, client = null) {
+  if (useMemory()) {
+    return memory.replaceTargetFingerprints(guildId, targetId, fingerprints);
+  }
+
+  const run = async (c) => {
+    await c.query(
+      `DELETE FROM image_target_fingerprints
+       WHERE guild_id = $1 AND target_id = $2`,
+      [guildId, targetId],
+    );
+
+    const out = [];
+    for (const fp of fingerprints || []) {
+      const fingerprintId = randomUUID();
+      const res = await c.query(
+        `INSERT INTO image_target_fingerprints (
+           fingerprint_id, guild_id, target_id, frame_index, variant_key,
+           d_hash, a_hash, p_hash, block_hash, edge_hash,
+           embedding, content_hash, timestamp_ms
+         ) VALUES (
+           $1,$2,$3,$4,$5,
+           $6,$7,$8,$9,$10,
+           $11::jsonb,$12,$13
+         )
+         RETURNING *`,
+        [
+          fingerprintId,
+          guildId,
+          targetId,
+          fp.frameIndex ?? 0,
+          fp.variantKey || 'original',
+          fp.dHash || null,
+          fp.aHash || null,
+          fp.pHash || null,
+          fp.blockHash || null,
+          fp.edgeHash || null,
+          fp.embedding == null ? null : JSON.stringify(fp.embedding),
+          fp.contentHash || null,
+          fp.timestampMs ?? 0,
+        ],
+      );
+      out.push(mapFingerprintRow(res.rows[0]));
+    }
+
+    await c.query(
+      `UPDATE image_targets SET fingerprint_version = 2
+       WHERE guild_id = $1 AND target_id = $2`,
+      [guildId, targetId],
+    );
+
+    return out;
+  };
+
+  if (client) return run(client);
+  return withClient(run);
 }
 
 export async function updateTarget(guildId, targetId, patch) {

@@ -1,4 +1,4 @@
-# Image Target Watcher
+# Image Target Watcher (V2)
 
 Lightweight add-on for DarkNight Home Theater. Admins upload a **target image**;
 the bot watches chosen channels and reacts when someone posts a visually similar
@@ -6,38 +6,45 @@ image, GIF frame, video frame, custom emoji, or sticker.
 
 This is **not** a full moderation suite — just focused visual matching.
 
-## How matching works
+## How matching works (V2)
 
 ```
-IMAGE POSTED
+MEDIA POSTED (image / GIF / APNG / video / emoji / sticker / URL)
     ↓
-Is it image/gif/video/emoji?
-   ↙          ↘
- NO           YES
-  ↓            ↓
-IGNORE      local pHash (dHash + blockHash)
-               ↓
-         Very obvious match?
-          ↙            ↘
-        YES            NO (but close)
-         ↓              ↓
-       MATCH      Jina CLIP embedding
-                        ↓
-                  cosine similarity
-                        ↓
-                   MATCH / NO MATCH
+Media sampler (multi-frame for GIF/video; first+last+spaced)
+    ↓
+Variant normalizer (crop / grayscale / flip / contrast / letterbox)
+    ↓
+Multi-fingerprint ensemble (dHash + aHash + pHash + blockHash + edge)
+    ↓
+Local similarity ranking (soft gate — NOT a hard reject)
+   ↙                    ↘
+obvious local         uncertain / edited
+   ↓                       ↓
+ MATCH                 Jina CLIP (optional)
+                           ↓
+                    cosine similarity
+                           ↓
+                     MATCH / NO MATCH
+    ↓
+Strongest frame/variant score wins → existing moderation action
 ```
 
-1. **Local perceptual hash** (always on) — cheap Hamming-distance pre-filter.
-   Obvious near-duplicates never call the API.
-2. **Jina `jina-clip-v2` embeddings** (optional) — only for the ambiguous band.
+1. **Multi-frame sampling** — GIFs/APNGs/videos sample across the duration
+   (beginning, middle, end). A match on **any** sampled frame counts.
+2. **Multi-variant normalization** — center crops, grayscale, flip, mild
+   rotation, caption-strip crops improve resistance to borders/captions/edits.
+3. **Local hash ensemble** — ranks candidates cheaply. Soft thresholds skip
+   clearly unrelated media; edited near-duplicates still reach Jina (or match
+   locally when Jina is offline).
+4. **Jina `jina-clip-v2` embeddings** (optional) — for the uncertain band.
    Cosine similarity of L2-normalized vectors, score in `[0, 1]`.
 
-**Similarity score:** cosine similarity after L2-normalization. Default threshold
-`0.90` means “vectors are very close,” **not** “90% of pixels are identical.”
+**Similarity score:** strongest evidence across frames/variants. Default
+embedding threshold `0.90`. Without `JINA_API_KEY`, strong local ensemble hits
+still match.
 
-Without `JINA_API_KEY`, only the local pHash stage runs (exact / near-exact
-duplicates still match).
+V1 targets (single hash row) keep working via a legacy fingerprint synthesis.
 
 ## Fast setup
 
@@ -48,7 +55,7 @@ duplicates still match).
    until the intent is enabled.
 2. **Postgres** — Railway → bot service → Variables →
    `DATABASE_URL` = `${{Postgres.DATABASE_URL}}` → redeploy. Tables are created
-   on boot.
+   on boot (including `image_target_fingerprints` for V2).
 3. Optional: `JINA_API_KEY` (https://jina.ai/?sui=apikey).
 4. Re-register slash commands after deploy:
 
@@ -72,7 +79,7 @@ Opens an ephemeral **Image Target Hub** (no slash subcommand maze):
 | **Add image** | Discord file picker modal — attach image/GIF/video |
 | **Watch this channel** | Arm live matching in the channel you ran the command in |
 | **Unwatch this channel** | Stop watching this channel |
-| **Test image** | Dry-run match (no delete / no punish) |
+| **Test image** | Dry-run match with V2 score breakdown (no delete / no punish) |
 | **Set action** | Pick what happens on a match |
 | **Remove target** | Delete a saved target |
 | **Refresh** | Reload status + gallery |
@@ -83,8 +90,9 @@ Or attach a file on the slash command itself:
 /image-target image:<file> name:Scam banner
 ```
 
-That saves the target, **auto-watches the current channel**, prefers
-**Delete + warn**, and shows the hub gallery with a preview thumbnail.
+That saves the target (with a V2 fingerprint set), **auto-watches the current
+channel**, prefers **Delete + warn**, and shows the hub gallery with a preview
+thumbnail.
 
 ### Match actions
 
@@ -98,46 +106,35 @@ Targets are **guild-scoped** — Guild A never affects Guild B.
 
 ## Typical flow
 
+1. `/image-target` → **Add image** (or attach on the slash command).
+2. **Watch this channel**.
+3. Confirm status shows **ARMED**.
+4. Optionally **Test image** to see V2 scores (frame/timestamp/variant/local/Jina).
+
+## Optional V2 env knobs
+
+Safe defaults — usually leave unset:
+
 ```
-Admin:  /image-target          (in #general)
-Bot:    Hub opens → checklist
-
-Admin:  Add image  (or attach on the slash command)
-Bot:    Target saved · gallery shows preview · channel auto-watched
-
-User posts the same image in that channel
-Bot:    Deletes message · public warn · logs detection embed
+IMAGE_TARGET_MAX_FRAMES=10
+IMAGE_TARGET_VIDEO_SAMPLE_COUNT=8
+IMAGE_TARGET_MAX_MEDIA_PER_MESSAGE=12
+IMAGE_TARGET_MAX_VARIANTS=9
+IMAGE_TARGET_ANALYSIS_TIMEOUT_MS=25000
+IMAGE_TARGET_FFMPEG_TIMEOUT_MS=15000
+IMAGE_TARGET_CONCURRENCY=2
+IMAGE_TARGET_EMBEDDING_THRESHOLD=0.9
 ```
 
-**Why test worked but live posts did nothing (before this hub):**
-
-- `/test` never required a watched channel; live matching only runs in channels
-  you arm with **Watch this channel** (or auto-watch on add).
-- Old default `delete_log` deleted quietly with no public warn; failed deletes
-  could look like “success.” Default is now `delete_warn`, and failed deletes
-  still warn.
-
-## Modules
-
-| File | Role |
-|---|---|
-| `phash.js` | dHash + blockHash via `sharp` |
-| `providers/types.js` | `ImageSimilarityProvider` interface |
-| `providers/jina.js` | Jina CLIP v2 + embedding cache |
-| `detector.js` | Two-stage matcher |
-| `download.js` | Safe download, SSRF guards, video frame via ffmpeg |
-| `store.js` | **Postgres** repository (`DATABASE_URL`) |
-| `migrate.js` | Idempotent schema migration on boot |
-| `actions.js` | Log / delete / warn / timeout / kick / ban |
-| `commands.js` | Slash command → hub |
-| `hub.js` | Interactive hub (file upload, gallery, arm channel) |
-| `watcher.js` | `messageCreate` / `messageUpdate` listener |
-| `../../db/postgres.js` | Shared `pg` pool (Railway TLS) |
-
-## Dev / tests
+## Tests
 
 ```bash
-IMAGE_TARGET_MEMORY=1 npm run test:image-target
+npm run test:image-target
 ```
 
-In-memory store is for unit tests only. Production uses Postgres.
+## Limits
+
+- Not 100% detection — heavy adversarial edits, tiny crops of a large collage,
+  or targets buried in long videos beyond the sample budget can still slip.
+- FFmpeg must be available for video (Railway/Nixpacks already installs it).
+- Download SSRF protections, size limits, and timeouts still apply.

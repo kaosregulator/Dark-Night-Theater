@@ -1,5 +1,21 @@
-// Image Target Watcher — defaults and limits.
-// Keep this feature lightweight: local pHash first, Jina only when needed.
+// Image Target Watcher — defaults and limits (V2).
+// Local multi-hash ensemble ranks candidates; Jina is used for uncertain/edited matches.
+
+function envInt(name, fallback, { min = 1, max = 10_000 } = {}) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return fallback;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function envFloat(name, fallback, { min = 0, max = 1 } = {}) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return fallback;
+  const n = Number.parseFloat(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
 
 /** Max download / attachment size for analysis (bytes). */
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -22,7 +38,8 @@ export const MAX_REDIRECTS = 3;
 export const DEFAULT_SIMILARITY_THRESHOLD = 0.9;
 
 /**
- * pHash Hamming-distance gates (64-bit / 16-hex-char hashes).
+ * Legacy pHash Hamming-distance gates (64-bit / 16-hex-char hashes).
+ * Kept for backward-compatible helpers; V2 prefers similarity scores.
  * - <= OBVIOUS_MATCH_HAMMING → treat as match without calling Jina
  * - <= CANDIDATE_HAMMING → potentially similar → call Jina if available
  * - > CANDIDATE_HAMMING → ignore (save API quota)
@@ -32,6 +49,111 @@ export const CANDIDATE_HAMMING = 18;
 
 /** Blockhash bits (16 → 256-bit hex). We also store a 64-bit dHash. */
 export const BLOCKHASH_BITS = 16;
+
+// ---- Image Target V2 budgets / thresholds ---------------------------------
+
+/** Max frames sampled from a GIF/APNG/video. */
+export const IMAGE_TARGET_MAX_FRAMES = envInt('IMAGE_TARGET_MAX_FRAMES', 10, {
+  min: 2,
+  max: 24,
+});
+
+/** Preferred video sample count (still bounded by MAX_FRAMES). */
+export const IMAGE_TARGET_VIDEO_SAMPLE_COUNT = envInt(
+  'IMAGE_TARGET_VIDEO_SAMPLE_COUNT',
+  8,
+  { min: 3, max: 24 },
+);
+
+/** Max media items analyzed per message (attachments+embeds+urls+…). */
+export const IMAGE_TARGET_MAX_MEDIA_PER_MESSAGE = envInt(
+  'IMAGE_TARGET_MAX_MEDIA_PER_MESSAGE',
+  12,
+  { min: 1, max: 32 },
+);
+
+/** Max comparison variants generated per sampled frame. */
+export const IMAGE_TARGET_MAX_VARIANTS = envInt('IMAGE_TARGET_MAX_VARIANTS', 9, {
+  min: 1,
+  max: 16,
+});
+
+/** Hard wall-clock budget for analyzing one media buffer. */
+export const IMAGE_TARGET_ANALYSIS_TIMEOUT_MS = envInt(
+  'IMAGE_TARGET_ANALYSIS_TIMEOUT_MS',
+  25_000,
+  { min: 3_000, max: 120_000 },
+);
+
+/** FFmpeg per-invocation timeout (ms). */
+export const IMAGE_TARGET_FFMPEG_TIMEOUT_MS = envInt(
+  'IMAGE_TARGET_FFMPEG_TIMEOUT_MS',
+  15_000,
+  { min: 2_000, max: 60_000 },
+);
+
+/** Concurrent media analyses across the process. */
+export const IMAGE_TARGET_CONCURRENCY = envInt('IMAGE_TARGET_CONCURRENCY', 2, {
+  min: 1,
+  max: 8,
+});
+
+/** Longest edge when normalizing frames for hashing. */
+export const IMAGE_TARGET_HASH_EDGE = envInt('IMAGE_TARGET_HASH_EDGE', 512, {
+  min: 128,
+  max: 1024,
+});
+
+/**
+ * Local ensemble similarity above which we treat as an obvious match
+ * without calling Jina (when embeddings are unavailable or unnecessary).
+ */
+export const LOCAL_OBVIOUS_SIMILARITY = envFloat(
+  'IMAGE_TARGET_LOCAL_OBVIOUS',
+  0.88,
+);
+
+/**
+ * Below this local similarity, skip expensive embedding (clearly unrelated).
+ * Soft gate — not an absolute rejection for borderline edited targets.
+ */
+export const LOCAL_SKIP_SIMILARITY = envFloat('IMAGE_TARGET_LOCAL_SKIP', 0.32);
+
+/**
+ * Local similarity at/above which we always request Jina when available
+ * (uncertain / potentially modified target band).
+ */
+export const LOCAL_CANDIDATE_SIMILARITY = envFloat(
+  'IMAGE_TARGET_LOCAL_CANDIDATE',
+  0.52,
+);
+
+/**
+ * When Jina is unavailable, accept a local ensemble match at/above this floor.
+ * Keeps edited near-duplicates actionable without embeddings.
+ */
+export const LOCAL_MATCH_WITHOUT_EMBEDDING = envFloat(
+  'IMAGE_TARGET_LOCAL_MATCH',
+  0.82,
+);
+
+/**
+ * Override embedding match threshold (falls back to guild/target threshold).
+ * Env IMAGE_TARGET_EMBEDDING_THRESHOLD.
+ */
+export const IMAGE_TARGET_EMBEDDING_THRESHOLD = (() => {
+  const raw = process.env.IMAGE_TARGET_EMBEDDING_THRESHOLD;
+  if (raw == null || raw === '') return null;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : null;
+})();
+
+/** Max fingerprints stored per target (frames × variants, capped). */
+export const IMAGE_TARGET_MAX_STORED_FINGERPRINTS = envInt(
+  'IMAGE_TARGET_MAX_STORED_FINGERPRINTS',
+  40,
+  { min: 4, max: 120 },
+);
 
 /** Supported still-image MIME / extensions. */
 export const IMAGE_MIME = new Set([
@@ -47,7 +169,7 @@ export const IMAGE_EXT = new Set([
   'png', 'jpg', 'jpeg', 'webp', 'gif', 'apng',
 ]);
 
-/** Video extensions we attempt to sample a still frame from (requires ffmpeg). */
+/** Video extensions we attempt to sample still frames from (requires ffmpeg). */
 export const VIDEO_EXT = new Set([
   'mp4', 'webm', 'mov', 'mkv', 'avi',
 ]);

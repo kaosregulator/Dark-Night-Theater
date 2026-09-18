@@ -39,6 +39,7 @@ import {
   removeTarget,
   updateTarget,
 } from './store.js';
+import { formatTestResult } from './scoring.js';
 
 /**
  * Image Target Hub — Discord file picker to add targets, one-click channel arming,
@@ -99,16 +100,33 @@ export async function bufferFromAttachment(attachment) {
   const downloaded = await downloadBytes(attachment.proxyURL || attachment.url);
   const buffer = Buffer.isBuffer(downloaded) ? downloaded : downloaded.buffer;
   const contentType = downloaded.contentType || attachment.contentType || '';
-  const loaded = await loadMediaAsImage(buffer, {
+  // Keep the raw media bytes for V2 multi-frame analysis. Also produce a
+  // single preview still for the hub thumbnail via loadMediaAsImage.
+  const previewMeta = {
     contentType,
     filename: attachment.name,
     url: attachment.url,
-  });
-  const out = Buffer.isBuffer(loaded) ? loaded : loaded.buffer;
-  const mediaKind =
-    (!Buffer.isBuffer(loaded) && loaded.mediaKind) ||
-    (looksLikeVideo(meta) ? 'video' : 'image');
-  return { buffer: out, mediaKind, sourceUrl: attachment.url };
+  };
+  let previewBuffer = buffer;
+  let mediaKind = looksLikeVideo(meta)
+    ? 'video'
+    : (attachment.name || '').toLowerCase().endsWith('.gif') || contentType === 'image/gif'
+      ? 'gif'
+      : 'image';
+  try {
+    const loaded = await loadMediaAsImage(buffer, previewMeta);
+    previewBuffer = Buffer.isBuffer(loaded) ? loaded : loaded.buffer;
+    if (!Buffer.isBuffer(loaded) && loaded.mediaKind) mediaKind = loaded.mediaKind;
+  } catch {
+    // Preview failure is non-fatal for still images.
+  }
+  return {
+    buffer,
+    previewBuffer,
+    mediaKind,
+    sourceUrl: attachment.url,
+    meta: previewMeta,
+  };
 }
 
 async function probeChannelPerms(guild, channelId) {
@@ -130,9 +148,13 @@ export async function saveTargetFromAttachment(
   attachment,
   { name = null, userId, autoWatchChannelId = null } = {},
 ) {
-  const { buffer, mediaKind, sourceUrl } = await bufferFromAttachment(attachment);
-  const analyzed = await analyzeTargetBuffer(buffer, { withEmbedding: true });
-  const previewJpeg = await makePreviewJpeg(buffer);
+  const { buffer, previewBuffer, mediaKind, sourceUrl, meta } =
+    await bufferFromAttachment(attachment);
+  const analyzed = await analyzeTargetBuffer(buffer, {
+    withEmbedding: true,
+    meta,
+  });
+  const previewJpeg = await makePreviewJpeg(previewBuffer || buffer);
   const displayName =
     (name && name.trim()) ||
     (attachment.name || 'target').replace(/\.[^.]+$/, '').slice(0, 64);
@@ -146,9 +168,11 @@ export async function saveTargetFromAttachment(
     contentHash: analyzed.contentHash,
     mimeType: attachment.contentType || analyzed.format || null,
     createdBy: userId,
-    mediaKind,
+    mediaKind: analyzed.mediaKind || mediaKind,
     previewJpeg,
     sourceUrl,
+    fingerprintVersion: 2,
+    fingerprints: analyzed.fingerprints || null,
   });
 
   let watched = null;
@@ -503,31 +527,41 @@ export async function handleImageTargetHub(interaction) {
       if (!attachment) {
         return interaction.editReply({ content: '❌ No file received.' });
       }
-      const { buffer } = await bufferFromAttachment(attachment);
-      const result = await testAgainstTargets(guildId, buffer);
+      const { buffer, meta } = await bufferFromAttachment(attachment);
+      const result = await testAgainstTargets(guildId, buffer, { meta });
       if (!result.results?.length) {
         return interaction.editReply({
           content: result.message || 'No targets to test against.',
         });
       }
+      const top = result.top || result.results[0];
+      const detail = (result.reportText || formatTestResult(top) || '').slice(0, 1000);
+      const summary = result.results
+        .slice(0, 5)
+        .map((r) => {
+          const mark = r.matched ? '🚨' : '·';
+          const frame =
+            r.frameIndex != null ? ` · frame ${r.frameIndex}` : '';
+          const variant = r.variantKey ? ` · ${r.variantKey}` : '';
+          return `${mark} **${r.target.name}**: ${pct(r.finalScore ?? 0)} (${r.methodLabel || r.method || '—'}${frame}${variant})`;
+        })
+        .join('\n');
       const embed = new EmbedBuilder()
         .setColor(result.match ? 0xe74c3c : 0x3bd275)
-        .setTitle('🔍 Image Target Test')
-        .setDescription(
-          result.results
-            .slice(0, 5)
-            .map((r) => {
-              const mark = r.matched ? '🚨' : '·';
-              return `${mark} ${r.target.name}: ${pct(r.finalScore ?? 0)} (${r.method || '—'})`;
-            })
-            .join('\n'),
-        )
-        .addFields({
-          name: 'Result',
-          value: result.match
-            ? '🚨 **MATCH** — live posts like this should be actioned in watched channels'
-            : '✅ No match under current thresholds',
-        });
+        .setTitle('🔍 Image Target Test (V2)')
+        .setDescription(summary)
+        .addFields(
+          {
+            name: 'Decision',
+            value: result.match
+              ? '🚨 **MATCH** — live posts like this should be actioned in watched channels'
+              : '✅ No match under current thresholds',
+          },
+          {
+            name: 'Top candidate detail',
+            value: `\`\`\`\n${detail || 'n/a'}\n\`\`\``,
+          },
+        );
       return interaction.editReply({ embeds: [embed] });
     }
 
