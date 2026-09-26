@@ -2,7 +2,6 @@ import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, AttachmentB
 import * as library from '../../services/library-store.js';
 import * as sessions from '../../services/sessions.js';
 import { getSettings } from '../../services/settings-store.js';
-import { getPlayback } from '../../media/store.js';
 import { canHost, canManage } from '../permissions.js';
 import { createActivityInvite, publishPanel } from './theater.js';
 import { COLORS } from './format.js';
@@ -186,7 +185,7 @@ async function enterTheater(interaction, uid) {
     if (!canHost(member) && !canManage(member)) {
       return interaction.editReply('⏳ No host has started this movie yet. Ask a host to start it, then join.');
     }
-    const playback = getPlayback(video);
+    const playback = library.getPlaybackFor(video);
     sessions.startClanMovie(voice.id, { hostId: member.id, guildId: interaction.guildId, video, playback });
     await publishPanel(interaction.channel, voice.id, await createActivityInvite(voice));
   }

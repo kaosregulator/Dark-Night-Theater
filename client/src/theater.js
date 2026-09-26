@@ -106,7 +106,10 @@ export class TheaterUI {
             <button type="button" class="fs-exit hidden" id="fs-exit" title="Exit fullscreen">✕</button>
           </div>
           <aside class="react-drawer" id="react-drawer" hidden>
-            <div class="react-drawer-head">Reacts</div>
+            <div class="react-drawer-head">
+              <span>Reacts</span>
+              <button type="button" class="react-drawer-close" id="react-drawer-close" title="Close">✕</button>
+            </div>
             <div class="react-drawer-grid" id="ghost-reacts">
               ${REACTS.map(
                 (r) =>
@@ -156,12 +159,16 @@ export class TheaterUI {
     this.root.querySelector('#btn-concession').onclick = () => this.toggleConcession();
     this.root.querySelector('#btn-floor')?.addEventListener('click', () => this.toggleFloor());
     this.root.querySelector('#snack-play-conc')?.addEventListener('click', () => this.toggleConcession(true));
+    this.root.querySelector('#react-drawer-close')?.addEventListener('click', () => {
+      const drawer = this.root.querySelector('#react-drawer');
+      if (drawer) drawer.hidden = true;
+      this.root.querySelector('#btn-react')?.classList.remove('active');
+    });
     this.root.querySelectorAll('.ghost-react').forEach((b) => {
       b.onclick = () => {
         this.emit('react', { kind: b.dataset.react });
         this.floatReact(b.dataset.react);
-        this.root.querySelector('#react-drawer').hidden = true;
-        this.root.querySelector('#btn-react')?.classList.remove('active');
+        // Keep the emoji panel open until the user dismisses it (✕ or toggle).
       };
     });
     this.videoEl?.addEventListener('loadedmetadata', () => this._fitScreenToVideo());

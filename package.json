@@ -13,6 +13,7 @@
     "dev": "node --watch src/index.js",
     "dev:client": "vite",
     "postinstall": "node scripts/postinstall.js",
+    "test:vault": "node scripts/test-vault-memory.mjs",
     "test:moviebox": "node scripts/test-large-moviebox.mjs",
     "emoji:fetch": "node scripts/fetch-emoji-offline.mjs",
     "test:marquee": "node scripts/test-marquee-booths.mjs",

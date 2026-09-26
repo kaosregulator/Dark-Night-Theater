@@ -3,28 +3,40 @@ import path from 'node:path';
 import express from 'express';
 import * as store from '../../media/store.js';
 import { MIME } from '../../media/store.js';
+import * as vault from '../../media/vault.js';
 import { verifyMediaToken } from '../../media/token.js';
 
 const MIME_TYPE = (ext) => MIME[String(ext).toLowerCase()] || 'application/octet-stream';
 
 export const media = express.Router();
 
-// Stream a local video with HTTP range support. This is what makes seeking,
-// late joiners, and 1hr+ playback work: the browser's <video> element requests
-// byte ranges and we answer with 206 Partial Content.
-function handle(req, res, isHead) {
+// Stream a local (or vault-expanded) video with HTTP range support. Vault movies
+// stay gzip-chunked in Postgres until the first authenticated play request.
+async function handle(req, res, isHead) {
   const { id } = req.params;
   if (!verifyMediaToken(id, req.query.t)) {
     return res.status(403).end('Forbidden');
   }
-  const file = store.filePath(id);
-  if (!file || !fs.existsSync(file)) return res.status(404).end('Not found');
+
+  let file = store.filePath(id);
+  let type = file ? MIME_TYPE(path.extname(file)) : null;
+
+  if (!file || !fs.existsSync(file)) {
+    const movie = await vault.findMovie(id);
+    if (!movie || !movie.ready) return res.status(404).end('Not found');
+    try {
+      file = await vault.ensureMaterialized(id);
+    } catch (err) {
+      return res.status(503).end(`Vault expand failed: ${err.message}`);
+    }
+    if (!file || !fs.existsSync(file)) return res.status(404).end('Not found');
+    type = MIME_TYPE(path.extname(file)) || movie.mime_type || 'video/mp4';
+  }
 
   const stat = fs.statSync(file);
   const total = stat.size;
-  const type = MIME_TYPE(path.extname(file));
 
-  res.setHeader('Content-Type', type);
+  res.setHeader('Content-Type', type || 'application/octet-stream');
   res.setHeader('Accept-Ranges', 'bytes');
   res.setHeader('Cache-Control', 'no-store');
 
@@ -36,15 +48,13 @@ function handle(req, res, isHead) {
     return fs.createReadStream(file).pipe(res);
   }
 
-  // Parse "bytes=start-end"
   const m = /bytes=(\d*)-(\d*)/.exec(range);
   let start = m && m[1] ? parseInt(m[1], 10) : 0;
   let end = m && m[2] ? parseInt(m[2], 10) : total - 1;
   if (Number.isNaN(start) || Number.isNaN(end) || start > end || end >= total) {
     res.setHeader('Content-Range', `bytes */${total}`);
-    return res.status(416).end(); // Range Not Satisfiable
+    return res.status(416).end();
   }
-  // Cap chunk size so a single request can't pin the whole file in memory.
   const MAX_CHUNK = 4 * 1024 * 1024;
   if (end - start + 1 > MAX_CHUNK) end = start + MAX_CHUNK - 1;
 
@@ -55,5 +65,13 @@ function handle(req, res, isHead) {
   fs.createReadStream(file, { start, end }).pipe(res);
 }
 
-media.get('/:id', (req, res) => handle(req, res, false));
-media.head('/:id', (req, res) => handle(req, res, true));
+media.get('/:id', (req, res) => {
+  handle(req, res, false).catch((err) => {
+    if (!res.headersSent) res.status(500).end(err.message);
+  });
+});
+media.head('/:id', (req, res) => {
+  handle(req, res, true).catch((err) => {
+    if (!res.headersSent) res.status(500).end(err.message);
+  });
+});

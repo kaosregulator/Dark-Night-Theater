@@ -31,7 +31,10 @@ export const config = {
   // support — no cloud storage, no transcoding service.
   media: {
     dir: path.resolve(process.cwd(), str('MEDIA_DIR', 'media')),
-    maxUploadMb: int('MAX_UPLOAD_MB', 8192),
+    // Full-length films (1–2h+) — default 10 GB single-file cap.
+    maxUploadMb: int('MAX_UPLOAD_MB', 10240),
+    // Compressed admin library budget in Postgres (default 10 GB).
+    libraryQuotaGb: int('LIBRARY_QUOTA_GB', 10),
     tokenTtl: int('MEDIA_TOKEN_TTL', 86400), // playback URLs valid 24h by default
     // Temporary per-party session files are scrubbed after this age, or after
     // ~30 min of inactivity, or when the party ends — whichever comes first.

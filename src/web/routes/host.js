@@ -4,7 +4,8 @@ import express from 'express';
 import { config } from '../../config.js';
 import * as store from '../../media/store.js';
 import { VIDEO_EXTS, NON_WEB, ensureDir } from '../../media/store.js';
-import { getPlayback } from '../../media/store.js';
+import * as library from '../../services/library-store.js';
+import * as vault from '../../media/vault.js';
 import * as temp from '../../media/temp.js';
 import { verifyHostSession } from '../../media/token.js';
 import * as sessions from '../../services/sessions.js';
@@ -37,18 +38,171 @@ function sanitize(name) {
     .slice(0, 120);
 }
 
-// List / delete stay admin-only (library management).
-host.get('/api/host/list', requireKey, (req, res) => {
-  res.json({ videos: store.list(), dir: config.media.dir });
+// List / delete stay admin-only (library management). Vault movies stay until
+// the admin deletes them — users only see/play them.
+host.get('/api/host/list', requireKey, async (req, res) => {
+  try {
+    await library.refreshVaultCache();
+    const usage = await vault.usageForScope(vault.GLOBAL_SCOPE);
+    res.json({
+      videos: library.getCachedLibrary(),
+      dir: config.media.dir,
+      vault: true,
+      quota: {
+        usedBytes: usage.usedBytes,
+        quotaBytes: usage.quotaBytes,
+        remainingBytes: usage.remainingBytes,
+        quotaGb: config.media.libraryQuotaGb,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
-host.delete('/api/host/media/:id', requireKey, (req, res) => {
-  res.json({ ok: store.remove(req.params.id) });
+host.delete('/api/host/media/:id', requireKey, async (req, res) => {
+  const id = req.params.id;
+  let ok = false;
+  try {
+    ok = (await vault.removeMovie(id)) || store.remove(id);
+    await library.refreshVaultCache();
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+  res.json({ ok });
 });
 
-// Upload a video from the device. Auth: admin key OR a valid host session token.
-// Raw body stream -> disk (no multipart parser, resumable-friendly).
+// ---- Admin vault: chunked full-movie upload into compressed Postgres --------
+host.post('/api/host/vault/begin', requireKey, express.json(), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const started = await vault.beginUpload({
+      name: body.name,
+      size: body.size,
+      title: body.title,
+      description: body.description,
+      category: body.category || 'Library',
+      guildId: body.guildId || vault.GLOBAL_SCOPE,
+      addedBy: 'admin',
+    });
+    res.json({
+      ok: true,
+      id: started.id,
+      video: started.video,
+      quota: started.usage,
+      maxUploadMb: config.media.maxUploadMb,
+    });
+  } catch (err) {
+    const status = err.code === 'QUOTA' || err.code === 'TOO_LARGE' ? 413 : 400;
+    res.status(status).json({ error: err.message, code: err.code || 'ERROR' });
+  }
+});
+
+host.put('/api/host/vault/:id/data', requireKey, async (req, res) => {
+  const id = req.params.id;
+  const offset = Number(req.query.offset || 0);
+  const chunks = [];
+  let aborted = false;
+  const maxBytes = config.media.maxUploadMb * 1024 * 1024;
+  req.on('data', (c) => {
+    chunks.push(c);
+    const n = chunks.reduce((a, b) => a + b.length, 0);
+    if (n > 16 * 1024 * 1024 && !aborted) {
+      aborted = true;
+      req.destroy();
+      res.status(413).json({ error: 'Chunk too large' });
+    }
+  });
+  req.on('end', async () => {
+    if (aborted) return;
+    try {
+      const buf = Buffer.concat(chunks);
+      if (offset + buf.length > maxBytes) {
+        return res.status(413).json({ error: `Too large (> ${config.media.maxUploadMb} MB).` });
+      }
+      const result = await vault.appendUpload(id, offset, buf);
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      const status = err.code === 'GAP' ? 409 : err.code === 'NOT_FOUND' ? 404 : 500;
+      res.status(status).json({
+        error: err.message,
+        code: err.code,
+        receivedBytes: err.receivedBytes,
+      });
+    }
+  });
+  req.on('error', () => {
+    if (!res.headersSent) res.status(500).json({ error: 'Upload aborted' });
+  });
+});
+
+host.get('/api/host/vault/:id/offset', requireKey, async (req, res) => {
+  const info = await vault.uploadOffset(req.params.id);
+  if (!info) return res.status(404).json({ error: 'Not found', exists: false });
+  res.json({ ok: true, exists: true, ...info });
+});
+
+host.post('/api/host/vault/:id/finalize', requireKey, express.json(), async (req, res) => {
+  try {
+    const video = await vault.finalizeUpload(req.params.id, {
+      title: req.body?.title,
+      description: req.body?.description,
+      category: req.body?.category,
+    });
+    await library.refreshVaultCache();
+    const usage = await vault.usageForScope(video.scope || vault.GLOBAL_SCOPE);
+    res.json({ ok: true, video, quota: usage });
+  } catch (err) {
+    const status = err.code === 'QUOTA' ? 413 : 500;
+    res.status(status).json({ error: err.message, code: err.code || 'ERROR' });
+  }
+});
+
+// Legacy single-PUT upload (small files) — still works, now routes into vault.
 host.put('/api/host/upload', (req, res) => {
   if (!keyOk(req) && !sessionFrom(req)) return res.status(401).json({ error: 'Not authorised' });
+  // Prefer vault for admin-key uploads so full movies land in Postgres compressed.
+  if (keyOk(req)) {
+    const chunks = [];
+    let bytes = 0;
+    let aborted = false;
+    const maxBytes = config.media.maxUploadMb * 1024 * 1024;
+    req.on('data', (chunk) => {
+      bytes += chunk.length;
+      if (bytes > maxBytes && !aborted) {
+        aborted = true;
+        req.destroy();
+        return res.status(413).json({ error: `Too large (> ${config.media.maxUploadMb} MB).` });
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', async () => {
+      if (aborted) return;
+      try {
+        const buf = Buffer.concat(chunks);
+        const started = await vault.beginUpload({
+          name: req.query.name,
+          size: buf.length,
+          title: req.query.title ? String(req.query.title) : undefined,
+          category: req.query.category ? String(req.query.category) : 'Library',
+          guildId: vault.GLOBAL_SCOPE,
+          addedBy: 'admin',
+        });
+        await vault.appendUpload(started.id, 0, buf);
+        const video = await vault.finalizeUpload(started.id, {
+          title: req.query.title ? String(req.query.title) : undefined,
+          category: req.query.category ? String(req.query.category) : 'Library',
+        });
+        await library.refreshVaultCache();
+        log.info(`Vault uploaded "${video.name}" (${(buf.length / 1048576).toFixed(0)} MB raw)`);
+        res.json({ ok: true, video, vault: true });
+      } catch (err) {
+        const status = err.code === 'QUOTA' || err.code === 'TOO_LARGE' ? 413 : 500;
+        res.status(status).json({ error: err.message });
+      }
+    });
+    return;
+  }
+  // Session tokens still use the classic disk library path for one-off adds.
   ensureDir();
   const clean = sanitize(req.query.name);
   const ext = path.extname(clean).toLowerCase();
@@ -105,7 +259,7 @@ host.put('/api/host/upload', (req, res) => {
 host.post('/api/host/start', express.json(), async (req, res) => {
   const s = sessionFrom(req);
   if (!s) return res.status(401).json({ error: 'Session expired — re-open “Host a Movie” from /watch.' });
-  const video = store.find(req.body?.uid);
+  const video = library.findVideo(req.body?.uid) || store.find(req.body?.uid);
   if (!video) return res.status(404).json({ error: 'Video not found' });
   if (!s.voiceChannelId) {
     return res.status(400).json({ error: 'no-voice', message: 'Join a voice channel, then re-open “Host a Movie” from /watch to start a party.' });
@@ -114,7 +268,7 @@ host.post('/api/host/start', express.json(), async (req, res) => {
   if (!client) return res.status(503).json({ error: 'Bot is offline — try again in a moment.' });
 
   try {
-    const playback = getPlayback(video);
+    const playback = library.getPlaybackFor(video);
     sessions.startClanMovie(s.voiceChannelId, { hostId: s.userId, guildId: s.guildId, video, playback });
     const voice = await client.channels.fetch(s.voiceChannelId).catch(() => null);
     const text = s.textChannelId ? await client.channels.fetch(s.textChannelId).catch(() => null) : null;
@@ -387,6 +541,7 @@ export function hostPage() {
   <h1>🎬 Host a Movie</h1>
   <p id="mode">Add a video from this device. Best format: <b>MP4 (H.264 video + AAC audio)</b> or WebM. Even resolution (e.g. 1920×1080). Won’t play in browsers: <code>${nonWeb}</code>. MovieBox / “Pro” rips are often <b>H.265</b> — those show a black screen in Discord.</p>
   <div id="keywrap"><label>Admin key</label><input type="password" id="key" placeholder="HOST_ADMIN_KEY (or SESSION_SECRET)"/></div>
+  <p id="quota" style="display:none"><small></small></p>
   <label>Movie title (optional)</label>
   <input type="text" id="title" placeholder="Now Playing title"/>
   <label>Short description (optional)</label>
@@ -399,12 +554,13 @@ export function hostPage() {
   <input type="file" id="file" accept="video/*" style="display:none"/>
   <div class="bar" id="barwrap"><i id="bar"></i></div>
   <p id="status"><small>Choose a file to begin.</small></p>
-  <div id="listwrap"><h3>In your library</h3><ul id="list"></ul></div>
+  <div id="listwrap"><h3>Admin movie vault</h3><ul id="list"></ul></div>
 </div>
 <script>
 const $=s=>document.querySelector(s);
 const S=new URLSearchParams(location.search).get('s');
 const keyEl=$('#key');
+const CHUNK=8*1024*1024;
 if(S){ // session mode: opened from /watch — no key, auto-start the party
   $('#keywrap').style.display='none';
   $('#listwrap').style.display='none';
@@ -412,6 +568,7 @@ if(S){ // session mode: opened from /watch — no key, auto-start the party
 } else {
   keyEl.value=localStorage.getItem('dnkey')||'';
   keyEl.onchange=()=>{localStorage.setItem('dnkey',keyEl.value);refresh();};
+  $('#mode').innerHTML='Upload <b>full movies</b> (no more 30‑min clips). Files are <b>gzip‑chunked into Postgres</b> and only expanded when someone presses play — stays until you delete them. Quota defaults to <b>10 GB</b> compressed (~2–3 films). Users who browse Movies / Host still see <b>your</b> vault titles.<br><br><b>Must be Discord-safe:</b> MP4 H.264 + AAC (or WebM). Even width/height.';
   refresh();
 }
 const drop=$('#drop'),file=$('#file');
@@ -425,19 +582,67 @@ function setStatus(html){ $('#status').innerHTML='<small>'+html+'</small>'; }
 function upload(f){
   if(S) return hostSession(f); // temporary per-party session (streams while it plays)
   if(!(keyEl.value||'').trim()){ setStatus('Enter your admin key first.'); return; }
-  adminUpload(f);
+  adminVaultUpload(f);
 }
-// Admin mode: permanent library upload (waits for the whole file).
-function adminUpload(f){
-  const url='/api/host/upload?'+auth()+'&name='+encodeURIComponent(f.name)+'&category='+encodeURIComponent($('#cat').value||'Library');
-  const xhr=new XMLHttpRequest(); xhr.open('PUT',url);
-  $('#barwrap').style.display='block';
-  xhr.upload.onprogress=e=>{if(e.lengthComputable)$('#bar').style.width=(e.loaded/e.total*100)+'%';};
-  xhr.onload=()=>{ let r={}; try{r=JSON.parse(xhr.responseText);}catch{} $('#bar').style.width='0';
-    if(!r.ok){ setStatus('⚠️ '+(r.error||'Upload failed')); return; }
-    setStatus('✅ Added “'+r.video.name+'”.'); refresh(); };
-  xhr.onerror=()=>setStatus('⚠️ Network error');
-  setStatus('Uploading '+f.name+'…'); xhr.send(f);
+function fmtGb(n){ return (Number(n||0)/(1024*1024*1024)).toFixed(2)+' GB'; }
+function fmtMb(n){ return Math.floor(Number(n||0)/1048576)+' MB'; }
+// Admin vault: chunked upload → compress into Postgres (resumable for multi‑GB films).
+async function adminVaultUpload(f){
+  const key=(keyEl.value||'').trim();
+  const title=($('#title').value||'').trim();
+  const description=($('#desc').value||'').trim();
+  const category=$('#cat').value||'Library';
+  setStatus('Reserving vault space for “'+(title||f.name)+'”…');
+  $('#barwrap').style.display='block'; $('#bar').style.width='0';
+  let begin;
+  try{
+    begin=await fetch('/api/host/vault/begin?key='+encodeURIComponent(key),{
+      method:'POST', headers:{'Content-Type':'application/json','x-admin-key':key},
+      body:JSON.stringify({name:f.name,size:f.size,title:title||undefined,description:description||undefined,category})
+    }).then(r=>r.json());
+  }catch{ setStatus('⚠️ Could not reach the vault.'); return; }
+  if(!begin.ok){ setStatus('⚠️ '+(begin.error||'Could not start upload')); return; }
+  const id=begin.id;
+  let offset=0; let retries=0;
+  async function putChunk(){
+    const end=Math.min(offset+CHUNK, f.size);
+    const blob=f.slice(offset,end);
+    try{
+      const r=await fetch('/api/host/vault/'+id+'/data?key='+encodeURIComponent(key)+'&offset='+offset,{
+        method:'PUT', headers:{'x-admin-key':key,'Content-Type':'application/octet-stream'}, body:blob
+      }).then(x=>x.json().then(j=>({status:x.status,j})));
+      if(r.status===409 && r.j.receivedBytes!=null){ offset=r.j.receivedBytes; return putChunk(); }
+      if(r.status<200||r.status>=300||!r.j.ok){
+        if(++retries>40){ setStatus('⚠️ Upload stopped. Pick the file again to resume.'); return; }
+        setStatus('⚠️ Connection hiccup — resuming…');
+        await new Promise(res=>setTimeout(res,1500));
+        const off=await fetch('/api/host/vault/'+id+'/offset?key='+encodeURIComponent(key)).then(x=>x.json());
+        offset=off.receivedBytes||offset;
+        return putChunk();
+      }
+      retries=0;
+      offset=r.j.receivedBytes!=null?r.j.receivedBytes:end;
+      $('#bar').style.width=(offset/f.size*100)+'%';
+      setStatus('📡 Uploading full movie… '+Math.floor(offset/f.size*100)+'% ('+fmtMb(offset)+' / '+fmtMb(f.size)+'). Keep this tab open.');
+      if(offset<f.size) return putChunk();
+      setStatus('📦 Compressing into Postgres vault…');
+      const fin=await fetch('/api/host/vault/'+id+'/finalize?key='+encodeURIComponent(key),{
+        method:'POST', headers:{'Content-Type':'application/json','x-admin-key':key},
+        body:JSON.stringify({title:title||undefined,description:description||undefined,category})
+      }).then(x=>x.json());
+      if(!fin.ok){ setStatus('⚠️ '+(fin.error||'Finalize failed')); return; }
+      $('#bar').style.width='100%';
+      const q=fin.quota;
+      setStatus('✅ Vaulted “'+fin.video.name+'” — stays until you delete it. Compressed '+fmtMb(fin.video.compressedSize)+' (raw '+fmtMb(fin.video.size)+').'+(q?' Quota '+fmtGb(q.usedBytes)+' / '+fmtGb(q.quotaBytes)+'.':''));
+      refresh();
+    }catch(e){
+      if(++retries>40){ setStatus('⚠️ Upload stopped.'); return; }
+      setStatus('⚠️ Network error — retrying…');
+      await new Promise(res=>setTimeout(res,1500));
+      return putChunk();
+    }
+  }
+  return putChunk();
 }
 // Session mode: create a TEMPORARY party file, start the party immediately, then
 // stream the file up in the background so viewers watch as it uploads. The upload
@@ -479,9 +684,6 @@ async function hostSession(f){
   $('#barwrap').style.display='block';
   streamFrom(0);
 }
-// Upload in fixed chunks so multi‑GB MovieBox files don't die on a single giant
-// PUT (Railway/proxy idle timeouts). Server only runs probe/HLS when bytes >= size.
-var CHUNK=8*1024*1024;
 function streamFrom(offset){
   const end=Math.min(offset+CHUNK, FILE.size);
   const blob=FILE.slice(offset, end);
@@ -508,7 +710,6 @@ function streamFrom(offset){
   xhr.send(blob);
 }
 async function pollProbe(n){
-  // Large MovieBox converts can take a while before the first HLS segments appear.
   if(n>480){ setStatus(hostMsg+'<br><small>✅ Uploaded. Open the Theater and press ▶. If still black, re-encode to H.264+AAC.</small>'); return; }
   try{
     const r=await fetch('/api/host/session/'+SID+'/probe?s='+encodeURIComponent(S)).then(x=>x.json());
@@ -544,9 +745,19 @@ function resumeSoon(){
 }
 async function refresh(){
   const key=(keyEl.value||'').trim(); if(!key)return;
-  const r=await fetch('/api/host/list?key='+encodeURIComponent(key)); if(!r.ok){$('#list').innerHTML='';return;}
-  const {videos}=await r.json();
-  $('#list').innerHTML=videos.map(v=>'<li><span>🎬 '+v.name+' <small>'+(v.webPlayable?'':'⚠️ not web-playable')+'</small></span><button onclick="del(\\''+v.uid+'\\')">Delete</button></li>').join('')||'<li><small>No videos yet.</small></li>';
+  const r=await fetch('/api/host/list?key='+encodeURIComponent(key)); if(!r.ok){$('#list').innerHTML='';$('#quota').style.display='none';return;}
+  const data=await r.json();
+  const videos=data.videos||[];
+  const q=data.quota;
+  if(q){
+    $('#quota').style.display='block';
+    $('#quota').innerHTML='<small>🗄️ Vault quota: <b>'+fmtGb(q.usedBytes)+'</b> / '+fmtGb(q.quotaBytes)+' compressed · '+videos.filter(v=>v.vault).length+' vault film(s). Movies stay until you delete them.</small>';
+  }
+  $('#list').innerHTML=videos.map(v=>{
+    const tag=v.vault?' · vault '+fmtMb(v.compressedSize||v.size):'';
+    const warn=v.webPlayable?'':'⚠️ not web-playable';
+    return '<li><span>🎬 '+esc(v.name)+' <small>'+warn+tag+'</small></span><button onclick="del(\\''+v.uid+'\\')">Delete</button></li>';
+  }).join('')||'<li><small>No videos yet — drop a full movie above.</small></li>';
 }
 async function del(id){const key=(keyEl.value||'').trim();await fetch('/api/host/media/'+id+'?key='+encodeURIComponent(key),{method:'DELETE'});refresh();}
 </script></body></html>`;
