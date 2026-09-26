@@ -36,7 +36,11 @@ export function mountTheater(app, { serveActivity = true } = {}) {
   app.use('/tmedia', tmedia);
   // Host uploader API (mounted before /api so its raw upload body isn't parsed).
   app.use(host);
-  app.get('/host', (req, res) => res.type('html').send(hostPage()));
+  app.get('/host', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.type('html').send(hostPage());
+  });
 
   app.use('/api', api);
 

@@ -393,19 +393,11 @@ export class TheaterUI {
       empty.classList.remove('hidden');
     }
 
-    // Temp-session upload feed notice (only for the shared clan movie).
+    // Temp-session upload feed notice — same for short and long movies.
+    // Never mention HLS / convert / hold (those are silent server-side).
     const note = this.root.querySelector('#feed-note');
     if (note) {
-      if (inside && this.mode !== 'private' && p.converting && (p.feedStatus === 'streaming' || p.feedStatus === 'stalled')) {
-        note.textContent =
-          p.feedStatus === 'stalled'
-            ? '⏳ Upload stalled — waiting for the host… playback keeps your place.'
-            : '📡 Playing while the host uploads — optimizing in the background for Discord.';
-        note.classList.remove('hidden');
-      } else if (inside && this.mode !== 'private' && p.converting) {
-        note.textContent = '⚙️ Playing now — smoother Discord stream building in the background.';
-        note.classList.remove('hidden');
-      } else if (inside && this.mode !== 'private' && p.feedStatus === 'disconnected') {
+      if (inside && this.mode !== 'private' && p.feedStatus === 'disconnected') {
         note.textContent = '⚠️ Host connection lost — waiting for the host…';
         note.classList.remove('hidden');
       } else if (inside && this.mode !== 'private' && p.feedStatus === 'stalled') {
@@ -419,20 +411,15 @@ export class TheaterUI {
       }
     }
 
-    // Codec / black-screen guidance from server probe (MovieBox HEVC, AC-3, etc.).
-    // While converting, prefer the converting message — never leave a sticky fatal banner.
-    if (inside && this.mode !== 'private' && p.converting) {
-      this._localDecodeFail = false;
-      this.showCodecBanner(
-        p.codecTip ||
-          'Playing now — optimizing a Discord-safe stream in the background (no hold).'
-      );
-    } else if (inside && this.mode !== 'private' && p.codecTip) {
-      this.showCodecBanner(p.codecTip);
+    // Only show codec banners on real decode failures — never for convert tips.
+    if (inside && this.mode !== 'private' && p.codecTip && !p.converting) {
+      // Ignore soft/background tips; only surface explicit re-encode guidance.
+      if (/re-export|HandBrake|H\.264|not painting/i.test(String(p.codecTip))) {
+        this.showCodecBanner(p.codecTip);
+      } else if (!this._localDecodeFail) {
+        this.hideCodecBanner();
+      }
     } else if (!this._localDecodeFail) {
-      this.hideCodecBanner();
-    } else if (inside && this.mode !== 'private' && p.webPlayable && !p.converting) {
-      // Convert finished — clear any decode-fail left over from the original file.
       this.hideCodecBanner();
     }
 

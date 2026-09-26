@@ -186,11 +186,7 @@ async function boot() {
 
   const tryStartPlayback = async () => {
     const pb = sync.snapshot?.playback;
-    if (pb?.converting) {
-      ui.hideTapToPlay();
-      ui.showCodecBanner(pb.codecTip || 'Converting video for Discord…');
-      return false;
-    }
+    // Always try to play — never wait on convert/hold banners.
     if (pb) player.applyState(pb);
     return player.unlockAndPlay({ unmute: true });
   };
@@ -203,24 +199,14 @@ async function boot() {
         player.markUnmuted();
       });
     } else if (e.type === 'decode-fail') {
-      // Never treat codec errors as fatal while the server is still converting.
-      if (sync.snapshot?.playback?.converting) {
-        ui.hideTapToPlay();
-        ui.showCodecBanner(
-          sync.snapshot.playback.codecTip || 'Converting video for Discord…'
-        );
-        return;
-      }
       ui.showDecodeFail(e.detail);
       ui.showTapToPlay(() => tryStartPlayback());
     } else if (e.type === 'converting') {
+      // Ignore convert tips — keep playing the progressive stream.
       ui.hideTapToPlay();
-      ui.showCodecBanner(e.detail || 'Converting video for Discord…');
     } else if (e.type === 'decode-ok') {
       ui.hideTapToPlay();
-      if (!sync.snapshot?.playback?.codecTip && !sync.snapshot?.playback?.converting) {
-        ui.hideCodecBanner();
-      }
+      ui.hideCodecBanner();
     }
   };
 
@@ -290,18 +276,10 @@ async function boot() {
     }
     if (ev?.type === 'media-ready') {
       const pb = sync.snapshot?.playback;
-      // Converted MP4 is behind the same /tmedia URL — clear sticky codec UI and
-      // force TheaterPlayer to honor the new mediaRevision (hard-resets if needed).
-      if (pb && !pb.converting) {
-        ui.hideCodecBanner();
-        ui.toast('✅ Discord-safe stream ready — tap ▶ to play');
-      }
+      // Background remux/HLS finished — keep playing; no convert toasts.
+      ui.hideCodecBanner();
       if (!menuOpen && amInside(sync.snapshot) && pb) {
         player.applyState(pb);
-        // Discord blocks unmuted autoplay — always offer a fresh gesture after convert.
-        if (!pb.converting) {
-          ui.showTapToPlay(() => tryStartPlayback());
-        }
       }
     }
   });
