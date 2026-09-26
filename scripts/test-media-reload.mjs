@@ -1,5 +1,6 @@
 /**
- * Proves TheaterPlayer convert → media-ready reload behavior without Discord.
+ * Proves TheaterPlayer plays immediately (even if converting=true) and reloads
+ * cleanly on mediaRevision bumps — no hold / empty-src convert gate.
  * Run: node scripts/test-media-reload.mjs
  */
 import { TheaterPlayer } from '../client/src/player.js';
@@ -74,7 +75,7 @@ player.onLocalControl = (e) => events.push(e.type);
 const uid = 'temp-abc';
 const src = '/tmedia/temp-abc?t=tok';
 
-// 1) Converting: must NOT attach original src
+// 1) converting=true must still attach progressive src (play immediately).
 player.applyState({
   videoUid: uid,
   src,
@@ -86,16 +87,13 @@ player.applyState({
   positionAtUpdate: 0,
   rate: 1,
 });
-assert(player._awaitingConversion === true, 'awaiting conversion');
-assert(!video.src, 'no src while converting');
-assert(events.includes('converting'), 'emitted converting');
+assert(player._awaitingConversion === false, 'must NOT await conversion');
+assert(Boolean(video.src), 'src attached while converting flag is set');
+assert(video.src.includes('/tmedia/temp-abc'), 'progressive /tmedia attached');
+assert(!events.includes('converting'), 'no converting hold banner');
 
-// 2) Simulate prior MEDIA_ERR path: attach bad src then fail
-player._awaitingConversion = false;
-player._converting = false;
-player.mediaRevision = 0;
-player.currentUid = null;
-video.src = src + '&r=0';
+// 2) MEDIA_ERR then re-apply: still play progressive (no empty hold).
+events.length = 0;
 video.failUnsupported();
 assert(events.includes('decode-fail') || player._hadMediaError, 'recorded media error');
 
@@ -109,10 +107,10 @@ player.applyState({
   positionAtUpdate: 12,
   rate: 1,
 });
-assert(!video.src, 'cleared src while converting after error');
-assert(events.filter((e) => e === 'converting').length >= 1, 'converting after error');
+assert(Boolean(video.src), 'src still attached after error + converting');
+assert(!events.includes('converting'), 'no converting banner after error');
 
-// 3) media-ready: new revision → hard reset + load converted URL
+// 3) media-ready: new revision → hard reset + load URL
 events.length = 0;
 player.applyState({
   videoUid: uid,
@@ -169,4 +167,4 @@ player.applyState({
 assert(video.src.includes('r=3'), 'reload when paused on new revision');
 assert(video.paused === true, 'stayed paused');
 
-console.log('OK: media-reload pipeline checks passed');
+console.log('OK: media-reload play-immediately checks passed');

@@ -308,8 +308,8 @@ host.post('/api/host/session', express.json(), async (req, res) => {
     const playback = {
       ...temp.getPlayback(session),
       webPlayable: true,
-      converting: false, // play immediately; background convert may flip this later
-      codecTip: session.codecTip || null,
+      converting: false,
+      codecTip: null,
       posterUrl: req.body?.posterUrl ? String(req.body.posterUrl).slice(0, 800) : null,
       description: req.body?.description ? String(req.body.description).slice(0, 800) : null,
     };
@@ -340,10 +340,11 @@ host.post('/api/host/session', express.json(), async (req, res) => {
       activityUrl,
       webPlayable: true,
       converting: false,
-      codecTip: session.codecTip || null,
+      codecTip: null,
       suspectConvert: Boolean(session.suspectConvert),
       size: session.total,
       playNow: true,
+      uploader: 'v5-fast',
     });
   } catch (err) {
     temp.scrub(session.id);
@@ -436,8 +437,9 @@ host.get('/api/host/session/:id/probe', (req, res) => {
     exists: true,
     complete: session.complete,
     webPlayable: session.webPlayable !== false,
-    converting: Boolean(session.converting),
-    codecTip: session.codecTip || null,
+    // Never advertise convert/hold to the host page — silent server-side only.
+    converting: false,
+    codecTip: null,
     webReady: Boolean(session.webFile) || Boolean(session.kind === 'hls' && session.hlsDir),
     streamKind: session.kind || 'file',
     probe: session.probe
@@ -488,13 +490,18 @@ host.put('/api/host/session/:id/data', (req, res) => {
       if (!res.headersSent) res.status(413).json({ error: `Too large (> ${config.media.maxUploadMb} MB).` });
       return;
     }
-    // Pause until the chunk is durably written, so the reader never sees bytes
-    // that aren't on disk yet, and we get natural backpressure.
-    req.pause();
-    ws.write(chunk, () => {
+    // Advance after each write so /tmedia can serve durable bytes. Only pause
+    // the socket when the write buffer is full (drain) — pausing every chunk
+    // made multi‑GB uploads crawl.
+    const ok = ws.write(chunk, () => {
       temp.advance(session, chunk.length);
-      req.resume();
     });
+    if (!ok) {
+      req.pause();
+      ws.once('drain', () => {
+        if (!aborted) req.resume();
+      });
+    }
   });
   req.on('end', () => {
     if (aborted) return;
@@ -541,6 +548,8 @@ host.put('/api/host/session/:id/data', (req, res) => {
 export function hostPage() {
   const nonWeb = [...NON_WEB].join(', ');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate"/>
+<meta http-equiv="Pragma" content="no-cache"/>
 <title>DarkNight — Host a Movie</title><style>
   body{font-family:system-ui,sans-serif;background:#0b0b12;color:#e7e7f0;margin:0;padding:1.5rem}
   .card{max-width:720px;margin:1rem auto;background:#15151f;border:1px solid #2a2a3a;border-radius:16px;padding:1.5rem}
@@ -548,14 +557,16 @@ export function hostPage() {
   input[type=text],input[type=password]{width:100%;padding:.6rem;margin:.3rem 0 .8rem;background:#20202c;border:1px solid #2a2a3a;border-radius:8px;color:#fff}
   .drop{border:2px dashed #3a3a52;border-radius:14px;padding:2rem;text-align:center;color:#9a97b5;cursor:pointer;transition:.2s}
   .drop.hover{border-color:#c9a227;background:#191922}
-  .bar{height:10px;background:#20202c;border-radius:6px;overflow:hidden;margin:.6rem 0;display:none}.bar>i{display:block;height:100%;width:0;background:#37c871;transition:.2s}
+  .bar{height:10px;background:#20202c;border-radius:6px;overflow:hidden;margin:.6rem 0;display:none}.bar>i{display:block;height:100%;width:0;background:#37c871;transition:.05s}
   a.open{display:inline-block;margin-top:.6rem;background:#5865f2;color:#fff;text-decoration:none;padding:.55rem 1rem;border-radius:10px;font-weight:700}
   ul{list-style:none;padding:0}li{display:flex;justify-content:space-between;align-items:center;background:#1c1c2b;border:1px solid #2a2a3a;border-radius:10px;padding:.5rem .8rem;margin:.3rem 0}
   li button{background:#3a1c22;color:#ff9ea6;border:1px solid #5a2630;border-radius:8px;padding:.3rem .6rem;cursor:pointer}
   small{color:#9a97b5}
+  .ver{font-size:.7rem;color:#6a6780;margin:0 0 .6rem}
 </style></head><body><div class="card">
   <h1>🎬 Host a Movie</h1>
-  <p id="mode">Add a video from this device. Best format: <b>MP4 (H.264 video + AAC audio)</b> or WebM. Even resolution (e.g. 1920×1080). Won’t play in browsers: <code>${nonWeb}</code>. MovieBox / “Pro” rips are often <b>H.265</b> — those show a black screen in Discord.</p>
+  <p class="ver">uploader v5-fast · if you still see “holding / HLS / MovieBox” text, Railway is on an old build — redeploy + hard refresh</p>
+  <p id="mode">Add a video from this device. Best format: <b>MP4 (H.264 video + AAC audio)</b> or WebM. Even resolution (e.g. 1920×1080). Won’t play in browsers: <code>${nonWeb}</code>.</p>
   <div id="keywrap"><label>Admin key</label><input type="password" id="key" placeholder="HOST_ADMIN_KEY (or SESSION_SECRET)"/></div>
   <p id="quota" style="display:none"><small></small></p>
   <label>Movie title (optional)</label>
@@ -576,11 +587,11 @@ export function hostPage() {
 const $=s=>document.querySelector(s);
 const S=new URLSearchParams(location.search).get('s');
 const keyEl=$('#key');
-const CHUNK=8*1024*1024;
+const CHUNK=64*1024*1024;
 if(S){ // session mode: opened from /watch — no key, auto-start the party
   $('#keywrap').style.display='none';
   $('#listwrap').style.display='none';
-  $('#mode').innerHTML='Pick a movie from this device — the party <b>starts right away</b> and it <b>plays while it uploads</b> (long movies included — no hold). A Discord-safe stream may build in the background without pausing. Your file stays on your device; the server also stores a vault copy when upload finishes. <b>Keep this tab open</b> while it streams.<br><br><b>Best format:</b> MP4 with <b>H.264 + AAC</b> (or WebM). Even width/height (1920×1080).';
+  $('#mode').innerHTML='Pick any length movie — the party <b>starts and plays right away</b> while it uploads (same as a short clip). <b>Keep this tab open</b>.<br><br><b>Best format:</b> MP4 <b>H.264 + AAC</b> (or WebM), even width/height.';
 } else {
   keyEl.value=localStorage.getItem('dnkey')||'';
   keyEl.onchange=()=>{localStorage.setItem('dnkey',keyEl.value);refresh();};
@@ -688,14 +699,8 @@ async function hostSession(f){
       await fetch('/api/host/session/'+SID+'/meta?s='+encodeURIComponent(S),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({s:S,title:title||undefined,description:description||undefined})});
     }catch{}
   }
-  hostMsg='🎉 <b>Party started</b> — “'+(title||meta.name)+'”! Prefer launching from Discord: voice channel → <b>Activities</b> → DarkNight (same window). <b>Keep this tab open</b> while it streams.';
-  if(meta.activityUrl) hostMsg+='<br><a class="open" href="'+meta.activityUrl+'" target="_blank" rel="noopener">▶ Open Theater invite</a> <small>(invite links may open another Discord window — that’s Discord, not a bug)</small>';
-  if(meta.converting || meta.suspectConvert){
-    hostMsg+='<br><small>▶️ Playing now while it uploads. A smoother Discord stream may build in the background — no hold, no waiting for convert.</small>';
-    if(meta.codecTip) hostMsg+='<br><small>'+esc(meta.codecTip)+'</small>';
-  } else if(meta.webPlayable===false){
-    hostMsg+='<br><small>⚠️ This container may not play in browsers — use MP4 H.264/AAC.</small>';
-  }
+  hostMsg='🎉 <b>Party started</b> — “'+(title||meta.name)+'”! Open Theater from Discord Activities → DarkNight. <b>Keep this tab open</b> while it uploads.';
+  if(meta.activityUrl) hostMsg+='<br><a class="open" href="'+meta.activityUrl+'" target="_blank" rel="noopener">▶ Open Theater invite</a> <small>(invite links may open another Discord window)</small>';
   setStatus(hostMsg);
   $('#barwrap').style.display='block';
   streamFrom(0);
@@ -714,7 +719,7 @@ function streamFrom(offset){
     retries=0;
     if(r.complete || next>=FILE.size){
       $('#bar').style.width='100%';
-      setStatus(hostMsg+'<br><small>✅ Fully uploaded — optimizing for Discord…</small>');
+      setStatus(hostMsg+'<br><small>✅ Fully uploaded — Theater keeps playing.</small>');
       pollProbe(0);
       return;
     }
@@ -726,25 +731,16 @@ function streamFrom(offset){
   xhr.send(blob);
 }
 async function pollProbe(n){
-  if(n>480){ setStatus(hostMsg+'<br><small>✅ Uploaded. Open the Theater and press ▶. If still black, re-encode to H.264+AAC.</small>'); return; }
+  if(n>480){ setStatus(hostMsg+'<br><small>✅ Upload finished. Theater should already be playing.</small>'); return; }
   try{
     const r=await fetch('/api/host/session/'+SID+'/probe?s='+encodeURIComponent(S)).then(x=>x.json());
     if(!r.exists){ setStatus('The party has ended.'); return; }
-    if(r.converting && !r.webReady){
-      setStatus(hostMsg+'<br><small>▶️ Playing the live upload — background Discord stream still building (will swap in without skipping when ready).</small>');
-      setTimeout(()=>pollProbe(n+1),2500);
-      return;
-    }
-    if(r.webReady || r.probe){
-      let msg=hostMsg+'<br><small>✅ '+(r.streamKind==='hls'?'Discord stream ready (HLS)':'Ready')+''+(r.probe?(' · '+esc(r.probe.videoCodec||'?')+' / '+esc(r.probe.audioCodec||'?')+' · '+(r.probe.width||'?')+'×'+(r.probe.height||'?')):'')+'</small>';
-      if(r.codecTip) msg+='<br><small style="color:#ffb0b0">⚠️ '+esc(r.codecTip)+'</small>';
-      else if(r.webPlayable===false) msg+='<br><small style="color:#ffb0b0">⚠️ This file likely won’t paint in Discord — re-encode to H.264 + AAC.</small>';
-      else msg+='<br><small>Open the Theater — it should already be playing. Late joiners sync to the live position.</small>';
-      setStatus(msg);
+    if(r.complete || r.webReady || r.probe){
+      setStatus(hostMsg+'<br><small>✅ Fully uploaded. Theater keeps playing — late joiners sync to the live position.</small>');
       return;
     }
   }catch{}
-  setTimeout(()=>pollProbe(n+1),1500);
+  setTimeout(()=>pollProbe(n+1),2000);
 }
 function esc(s){ return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function resumeSoon(){
@@ -754,7 +750,7 @@ function resumeSoon(){
     try{
       const r=await fetch('/api/host/session/'+SID+'/offset?s='+encodeURIComponent(S)).then(x=>x.json());
       if(!r.exists){ setStatus('The party has ended.'); return; }
-      if(r.complete){ $('#bar').style.width='100%'; setStatus(hostMsg+'<br><small>✅ Fully uploaded — optimizing for Discord…</small>'); pollProbe(0); return; }
+      if(r.complete){ $('#bar').style.width='100%'; setStatus(hostMsg+'<br><small>✅ Fully uploaded — Theater keeps playing.</small>'); pollProbe(0); return; }
       streamFrom(r.receivedBytes);
     }catch{ resumeSoon(); }
   }, 1500);

@@ -1,29 +1,24 @@
-// Heuristics for MovieBox / rip files that look like ".mp4" but often use
-// HEVC/H.265 or AC-3. Used to schedule a background Discord-safe convert —
-// playback is NEVER held; progressive /tmedia starts immediately.
+// Filename hints for rips that often need a silent background Discord-safe
+// convert AFTER upload. Size alone never triggers convert or any UI hold —
+// a 900 MB H.264 movie plays exactly like a 30‑minute clip.
 
-/** Filename / title patterns that almost always need a Discord-safe convert. */
+/** Filename / title patterns that often need a Discord-safe convert. */
 const NAME_HINT =
-  /moviebox|hevc|h\.?265|x265|10[\s._-]?bit|hdr10|dolby[\s._-]?vision|bluray|blu[\s._-]?ray|remux|web[\s._-]?dl|webrip|hdtv|\beac3\b|\bac3\b|\bdts\b|\batmos\b/i;
+  /moviebox|hevc|h\.?265|x265|10[\s._-]?bit|hdr10|dolby[\s._-]?vision|\beac3\b|\bac3\b|\bdts\b|\batmos\b/i;
 
-/** Large full-length films — still play immediately; convert runs in the background. */
-export const LARGE_HOLD_BYTES = 700 * 1024 * 1024; // 700 MB (legacy name; no longer a hold)
+/** @deprecated kept for tests — size no longer forces convert. */
+export const LARGE_HOLD_BYTES = 700 * 1024 * 1024;
 
 export function looksLikeNeedsConvert(name, size = 0) {
   const n = String(name || '');
-  if (NAME_HINT.test(n)) return true;
-  const bytes = Number(size) || 0;
-  return bytes >= LARGE_HOLD_BYTES;
+  // Name/codec hints only. File size must NOT schedule convert or UI banners.
+  return NAME_HINT.test(n);
 }
 
+/** Never shown in the UI — logging/debug only. */
 export function suspectReason(name, size = 0) {
-  const n = String(name || '');
-  if (NAME_HINT.test(n)) {
-    return 'MovieBox/rip detected — playing now; building a Discord-safe stream in the background if needed.';
-  }
-  const bytes = Number(size) || 0;
-  if (bytes >= LARGE_HOLD_BYTES) {
-    return 'Full-length movie — playing while it uploads; optimizing for Discord in the background.';
+  if (looksLikeNeedsConvert(name, size)) {
+    return 'name-hint-convert';
   }
   return null;
 }

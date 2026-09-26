@@ -248,17 +248,14 @@ export class TheaterPlayer {
     this._paintTries += 1;
     if (stillLoading && this._paintTries < PAINT_MAX_TRIES) {
       this._paintTimer = setTimeout(() => this._checkPaint(), PAINT_WAIT_MS);
-      this.onLocalControl({
-        type: 'converting',
-        detail: 'Buffering movie through Discord…',
-      });
+      // Still buffering — keep quiet (no convert/hold banners).
       return;
     }
 
     this.onLocalControl({
       type: 'decode-fail',
       detail:
-        'Video is not painting frames. Discord Activities need MP4 H.264 + AAC (even resolution like 1920×1080). MovieBox / rip files are often H.265 — wait for server convert, or re-export.',
+        'Video is not painting frames. Use MP4 H.264 + AAC (even resolution like 1920×1080).',
     });
   }
 
@@ -280,12 +277,8 @@ export class TheaterPlayer {
 
   _onMediaError() {
     this._hadMediaError = true;
-    // Soft-fail while the server is still converting — keep trying progressive.
+    // Soft-fail while a silent background remux may still be running.
     if (this._converting || this._awaitingConversion) {
-      this.onLocalControl({
-        type: 'converting',
-        detail: 'Still playing the live upload — smoother stream building in the background…',
-      });
       return;
     }
     const err = this.video.error;
@@ -396,14 +389,7 @@ export class TheaterPlayer {
   async unlockAndPlay({ unmute = true } = {}) {
     const v = this.video;
 
-    // Convert still running: do not pretend play() can succeed on an empty src.
-    if (this._converting || this._awaitingConversion) {
-      this.onLocalControl({
-        type: 'converting',
-        detail: 'Converting video for Discord… hang tight, then tap again.',
-      });
-      return false;
-    }
+    // Never wait on convert — progressive /tmedia should already be attached.
 
     // After MEDIA_ERR / convert, the element may have no src — reload latest snapshot.
     const needsReload =
@@ -423,7 +409,7 @@ export class TheaterPlayer {
     if (!v.src && !this.hls) {
       this.onLocalControl({
         type: 'decode-fail',
-        detail: 'No movie loaded yet. If the host just uploaded, wait for convert to finish, then tap again.',
+        detail: 'No movie loaded yet. Keep the host tab open and tap ▶ again in a moment.',
       });
       return false;
     }
@@ -457,7 +443,7 @@ export class TheaterPlayer {
       } catch {
         this.onLocalControl({
           type: 'decode-fail',
-          detail: 'Could not start playback. If the file is still converting, wait a bit and tap again.',
+          detail: 'Could not start playback. Keep the host tab open and tap ▶ again.',
         });
         return false;
       }
@@ -480,17 +466,13 @@ export class TheaterPlayer {
       await this._waitForEvent('loadeddata', 500);
     }
 
-    // Still no frames — keep overlay up so the user can retry; arm a patient paint watch.
+    // Still no frames — keep ▶ overlay so the user can retry; no convert banners.
     this._armPaintWatch();
     if (v.error) {
       this._onMediaError();
       return false;
     }
-    this.onLocalControl({
-      type: 'converting',
-      detail: 'Still buffering through Discord… tap again in a moment if the screen stays black.',
-    });
-    // Return true only if the element is actually playing; otherwise keep the ▶ button.
+    this.onLocalControl({ type: 'needs-gesture' });
     return !v.paused && v.readyState >= 2;
   }
 
@@ -501,14 +483,7 @@ export class TheaterPlayer {
 
     this._converting = Boolean(playback.converting);
 
-    // Soft tip only — never block attaching the progressive / HLS URL.
-    if (playback.converting && !playback.hls) {
-      this.onLocalControl({
-        type: 'converting',
-        detail: playback.codecTip || 'Playing now — optimizing stream in the background…',
-      });
-    }
-
+    // No converting banners — just attach media and sync like a normal movie.
     if (playback.src || playback.hls || playback.dash) {
       this.load({
         uid: playback.videoUid,

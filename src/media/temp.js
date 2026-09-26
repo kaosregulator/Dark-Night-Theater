@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events';
 import { config } from '../config.js';
 import { MIME, NON_WEB } from './store.js';
 import { signMediaToken } from './token.js';
-import { looksLikeNeedsConvert, suspectReason, LARGE_HOLD_BYTES } from './suspect.js';
+import { looksLikeNeedsConvert, LARGE_HOLD_BYTES } from './suspect.js';
 import { bus as sessionBus, setFeedStatus } from '../services/sessions.js';
 import { log } from '../logger.js';
 
@@ -60,10 +60,9 @@ export function create({ channelId, name, size, addedBy, guildId, title, descrip
     (title || (name ? path.basename(String(name), path.extname(String(name))) : 'Movie'))
       .replace(/[._]+/g, ' ')
       .trim() || 'Movie';
-  // May need a background Discord-safe convert later — NEVER hold playback for that.
-  // Progressive /tmedia starts immediately for long and short films alike.
+  // May schedule a silent background convert after upload if the name looks
+  // like HEVC/MovieBox — NEVER holds playback and NEVER surfaces tips in UI.
   const suspect = looksLikeNeedsConvert(String(name || displayName), declaredSize) || NON_WEB.has(ext);
-  const tip = suspectReason(String(name || displayName), declaredSize);
   const session = {
     id,
     channelId: channelId || null,
@@ -79,11 +78,11 @@ export function create({ channelId, name, size, addedBy, guildId, title, descrip
     connected: false, // is a host upload actively feeding right now?
     everConnected: false,
     feedStatus: 'streaming',
-    // Play immediately — even for MovieBox/large. Convert runs after upload.
+    // Same as a short clip: play progressive immediately.
     webPlayable: !NON_WEB.has(ext),
     suspectConvert: suspect,
     converting: false,
-    codecTip: tip,
+    codecTip: null,
     kind: ext === '.m3u8' ? 'hls' : 'file',
     createdAt: now(),
     lastActivity: now(),
@@ -95,7 +94,7 @@ export function create({ channelId, name, size, addedBy, guildId, title, descrip
   if (channelId) byChannel.set(channelId, id);
   if (suspect) {
     log.info(
-      `temp ${id}: playing immediately · will optimize in background if needed (suspect MovieBox/large · ${(declaredSize / 1048576).toFixed(0)} MB)`
+      `temp ${id}: play now · silent background convert if probe needs it (${(declaredSize / 1048576).toFixed(0)} MB)`
     );
   }
   return session;
@@ -165,40 +164,29 @@ export function finish(session) {
 async function prepareForWeb(session) {
   if (session.prepareStarted) return;
   session.prepareStarted = true;
-  const { probeFile, faststartRemux, codecTip, logProbe } = await import('./probe.js');
+  const { probeFile, faststartRemux, logProbe } = await import('./probe.js');
 
   // Probe FIRST. Skipping an upfront full-file faststart remux on multi‑GB
-  // MovieBox files avoids the 120s timeout + 2× disk copy before HLS can start.
+  // files avoids long stalls before viewers can keep watching.
   let info = await probeFile(session.file, { failClosed: false });
   logProbe(session.id, info);
   session.probe = info;
+  session.codecTip = null;
 
-  if (info?.ok) {
-    session.webPlayable = Boolean(info.webPlayable);
-    session.codecTip = codecTip(info);
-  } else if (session.suspectConvert) {
-    // Probe unclear but filename/size looked rip-like — convert in background;
-    // keep progressive URL attached so playback never goes idle.
-    session.webPlayable = true;
-    session.codecTip =
-      'Playing now — optimizing a Discord-safe stream in the background…';
-  }
-
-  const needsConvert = Boolean(
-    session.suspectConvert || (info?.ok && (!info.webPlayable || info.oddSize))
-  );
+  // Convert ONLY when probe proves Discord can't paint — never because of size.
+  const needsConvert = Boolean(info?.ok && (!info.webPlayable || info.oddSize));
 
   if (!needsConvert) {
-    // Safe progressive MP4/WebM — optional moov reloc for faster start.
+    session.webPlayable = true;
+    session.converting = false;
+    // Optional moov reloc for faster start on smaller safe files.
     const remux = await faststartRemux(session.file, {
       timeoutMs: 120000,
       maxBytes: LARGE_HOLD_BYTES,
     });
     if (remux.ok) log.info(`temp ${session.id}: faststart remux ok`);
     else if (remux.reason) log.warn(`temp ${session.id}: faststart skipped — ${remux.reason}`);
-    session.converting = false;
-    session.webPlayable = true;
-    session.codecTip = null;
+    // No client banners — progressive already playing.
     if (session.channelId) {
       const { setPlaybackMeta } = await import('../services/sessions.js');
       setPlaybackMeta(session.channelId, {
@@ -207,29 +195,19 @@ async function prepareForWeb(session) {
         videoCodec: info?.videoCodec || null,
         audioCodec: info?.audioCodec || null,
         converting: false,
-        bumpRevision: true,
+        bumpRevision: false,
       });
     }
     await persistSessionToVault(session).catch((e) => log.warn('vault persist:', e.message));
     return;
   }
 
-  // Needs convert — keep progressive playing; mark converting as background work.
-  session.converting = true;
-  if (session.channelId) {
-    const { setPlaybackMeta } = await import('../services/sessions.js');
-    setPlaybackMeta(session.channelId, {
-      // Keep playable so clients do NOT enter the old "hold until HLS" path.
-      webPlayable: true,
-      codecTip:
-        'Playing now — building a smoother Discord stream in the background (no pause).',
-      videoCodec: info?.videoCodec || null,
-      audioCodec: info?.audioCodec || null,
-      converting: true,
-      // Do NOT bump revision here — that would reload and skip. Progressive stays.
-      bumpRevision: false,
-    });
-  }
+  // Needs convert — keep progressive playing; convert silently.
+  // Never flip playback.converting — clients must not see hold/HLS banners.
+  session.silentConvert = true;
+  session.converting = false;
+  session.webPlayable = true;
+  log.info(`temp ${session.id}: silent HLS convert (probe not Discord-safe)`);
 
   try {
     const { startLiveHls } = await import('./transcode.js');
@@ -247,8 +225,6 @@ async function prepareForWeb(session) {
       const handle = startLiveHls(session.file, hlsDir, {
         maxHeight: 720,
         onReady: () => {
-          // First segments exist — wait until HLS has caught up to the party's
-          // live position so swapping does not yank viewers back to 0:00.
           scheduleHlsSwapWhenCaughtUp(session).finally(finish);
         },
         onDone: () => {
@@ -257,17 +233,15 @@ async function prepareForWeb(session) {
         },
         onError: (err) => {
           log.warn(`temp ${session.id}: live HLS failed — ${err.message}`);
+          session.silentConvert = false;
           session.converting = false;
-          // Progressive keeps playing — don't mark unplayable.
           if (session.channelId) {
             import('../services/sessions.js')
               .then(({ setPlaybackMeta }) => {
                 setPlaybackMeta(session.channelId, {
                   converting: false,
                   webPlayable: true,
-                  codecTip:
-                    session.codecTip ||
-                    'Background convert failed — staying on the live upload stream.',
+                  codecTip: null,
                   bumpRevision: false,
                 });
               })
@@ -281,6 +255,7 @@ async function prepareForWeb(session) {
     });
   } catch (err) {
     log.warn(`temp ${session.id}: transcode error — ${err.message}`);
+    session.silentConvert = false;
     session.converting = false;
   }
 
@@ -336,6 +311,7 @@ async function scheduleHlsSwapWhenCaughtUp(session, { force = false } = {}) {
       session.hlsPlaylist = playlist;
       session.webPlayable = true;
       session.codecTip = null;
+      session.silentConvert = false;
       session.converting = false;
       session.kind = 'hls';
       session.hlsSwapped = true;

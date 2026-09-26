@@ -1,10 +1,10 @@
 /**
- * Proves large / MovieBox host uploads:
- *  1) Suspect heuristics still detect MovieBox/large (for background convert)
- *  2) create() plays immediately — NEVER holds webPlayable/converting
- *  3) Small YouTube converts stay progressive (play-while-upload)
- *  4) Chunked uploads only finish (probe/HLS) when declared size is complete
- *  5) HEVC probe → live HLS can still build Discord-safe playback
+ * Proves large / MovieBox host uploads play like short clips:
+ *  1) Size alone is NOT suspect (900MB H.264 plays like 30min)
+ *  2) Name hints (MovieBox/HEVC) still flag silent background convert
+ *  3) create() never holds — always webPlayable, no codecTip UI
+ *  4) Chunked uploads only finish when declared size is complete
+ *  5) HEVC → live HLS can still build when probe needs it
  *
  * Run: node scripts/test-large-moviebox.mjs
  */
@@ -23,13 +23,14 @@ function assert(cond, msg) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-console.log('1) suspect heuristics');
+console.log('1) suspect heuristics (name only — not size)');
 assert(looksLikeNeedsConvert('The Bay - MovieBoxPro.mp4', 50e6), 'MovieBoxPro name is suspect');
 assert(looksLikeNeedsConvert('film.hevc.mp4', 10e6), 'hevc name is suspect');
-assert(looksLikeNeedsConvert('big-movie.mp4', LARGE_HOLD_BYTES), '>=700MB is suspect');
+assert(!looksLikeNeedsConvert('big-movie.mp4', LARGE_HOLD_BYTES), 'size alone is NOT suspect');
+assert(!looksLikeNeedsConvert('toy story.mp4', 908e6), '908MB toy story NOT suspect by size');
 assert(!looksLikeNeedsConvert('youtube-clip-30min.mp4', 80e6), 'small YouTube convert is NOT suspect');
 assert(suspectReason('MovieBoxPro rip.mp4', 1e9), 'reason for MovieBox');
-assert(!/hold/i.test(suspectReason('MovieBoxPro rip.mp4', 1e9)), 'reason must not say hold');
+assert(!/hold/i.test(String(suspectReason('MovieBoxPro rip.mp4', 1e9) || '')), 'reason must not say hold');
 console.log('   ok');
 
 fs.rmSync(work, { recursive: true, force: true });
@@ -41,7 +42,18 @@ const temp = await import('../src/media/temp.js');
 const { probeFile } = await import('../src/media/probe.js');
 const { startLiveHls } = await import('../src/media/transcode.js');
 
-console.log('2) create() plays MovieBox/large immediately (no hold)');
+console.log('2) create() plays large files immediately with no tips');
+const big = temp.create({
+  channelId: 'ch-big',
+  name: 'toy-story.mp4',
+  size: 908_000_000,
+  addedBy: 'host',
+});
+assert(big.converting === false, 'large session must NOT start converting');
+assert(big.webPlayable === true, 'large must be webPlayable');
+assert(big.suspectConvert === false, 'size-only not suspect');
+assert(big.codecTip == null, 'no codec tip for UI');
+
 const mb = temp.create({
   channelId: 'ch-moviebox',
   name: 'The Bay - MovieBoxPro.mp4',
@@ -50,8 +62,8 @@ const mb = temp.create({
 });
 assert(mb.converting === false, 'MovieBox session must NOT start held/converting');
 assert(mb.webPlayable === true, 'MovieBox must be webPlayable for immediate play');
-assert(mb.suspectConvert === true, 'suspectConvert set for background convert');
-assert(mb.codecTip, 'codec tip present');
+assert(mb.suspectConvert === true, 'suspectConvert set for silent convert later');
+assert(mb.codecTip == null, 'no codec tip surfaced');
 
 const yt = temp.create({
   channelId: 'ch-youtube',
@@ -67,7 +79,7 @@ console.log('   ok');
 console.log('3) chunked upload finish gate');
 const chunked = temp.create({
   channelId: 'ch-chunk',
-  name: 'MovieBoxPro-chunk.mp4',
+  name: 'clip.mp4',
   size: 24,
   addedBy: 'host',
 });
@@ -150,8 +162,9 @@ assert(segs.length >= 1, 'at least one segment');
 handle.stop?.();
 console.log('   ok —', segs.length, 'segments');
 
+temp.scrub(big.id);
 temp.scrub(mb.id);
 temp.scrub(yt.id);
 temp.scrub(chunked.id);
 fs.rmSync(work, { recursive: true, force: true });
-console.log('\nALL PASSED — play-immediately + background convert look good.');
+console.log('\nALL PASSED — large files play like short clips; no hold UI.');
