@@ -232,14 +232,26 @@ export async function openMultiplex(
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  renderer.setSize(hostEl.clientWidth, hostEl.clientHeight, false);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0a0810);
   scene.fog = new THREE.Fog(0x0a0810, 22, 48);
 
-  const camera = new THREE.PerspectiveCamera(70, hostEl.clientWidth / Math.max(hostEl.clientHeight, 1), 0.08, 80);
+  const camera = new THREE.PerspectiveCamera(70, 1, 0.08, 80);
+
+  // Keep the WebGL canvas matched to the host (fixes black letterbox strip)
+  const resizeCanvas = () => {
+    const w = Math.max(1, hostEl.clientWidth || hostEl.offsetWidth || window.innerWidth);
+    const h = Math.max(1, hostEl.clientHeight || hostEl.offsetHeight || window.innerHeight);
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  };
+  resizeCanvas();
+  const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => resizeCanvas()) : null;
+  ro?.observe(hostEl);
+  window.addEventListener('resize', resizeCanvas);
 
   const hemi = new THREE.HemisphereLight(0xffe6c8, 0x1a1018, 1.15);
   scene.add(hemi);
@@ -1198,6 +1210,8 @@ export async function openMultiplex(
     cancelAnimationFrame(raf);
     window.removeEventListener('keydown', keyDown);
     window.removeEventListener('keyup', keyUp);
+    window.removeEventListener('resize', resizeCanvas);
+    ro?.disconnect();
     document.removeEventListener('pointerlockchange', onPointerLock);
     document.removeEventListener('mousemove', onMouseMove);
     disposeTouch?.();
