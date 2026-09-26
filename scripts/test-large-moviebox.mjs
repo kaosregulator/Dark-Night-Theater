@@ -1,9 +1,10 @@
 /**
- * Proves the MovieBox / large-file black-screen fixes:
- *  1) Suspect heuristics hold playback for MovieBox/large names
- *  2) Small YouTube converts stay progressive (play-while-upload)
- *  3) Chunked uploads only finish (probe/HLS) when declared size is complete
- *  4) HEVC probe → live HLS unlocks Discord-safe playback
+ * Proves large / MovieBox host uploads:
+ *  1) Suspect heuristics still detect MovieBox/large (for background convert)
+ *  2) create() plays immediately — NEVER holds webPlayable/converting
+ *  3) Small YouTube converts stay progressive (play-while-upload)
+ *  4) Chunked uploads only finish (probe/HLS) when declared size is complete
+ *  5) HEVC probe → live HLS can still build Discord-safe playback
  *
  * Run: node scripts/test-large-moviebox.mjs
  */
@@ -28,6 +29,7 @@ assert(looksLikeNeedsConvert('film.hevc.mp4', 10e6), 'hevc name is suspect');
 assert(looksLikeNeedsConvert('big-movie.mp4', LARGE_HOLD_BYTES), '>=700MB is suspect');
 assert(!looksLikeNeedsConvert('youtube-clip-30min.mp4', 80e6), 'small YouTube convert is NOT suspect');
 assert(suspectReason('MovieBoxPro rip.mp4', 1e9), 'reason for MovieBox');
+assert(!/hold/i.test(suspectReason('MovieBoxPro rip.mp4', 1e9)), 'reason must not say hold');
 console.log('   ok');
 
 fs.rmSync(work, { recursive: true, force: true });
@@ -39,16 +41,16 @@ const temp = await import('../src/media/temp.js');
 const { probeFile } = await import('../src/media/probe.js');
 const { startLiveHls } = await import('../src/media/transcode.js');
 
-console.log('2) create() holds MovieBox / large, leaves YouTube progressive');
+console.log('2) create() plays MovieBox/large immediately (no hold)');
 const mb = temp.create({
   channelId: 'ch-moviebox',
   name: 'The Bay - MovieBoxPro.mp4',
   size: 2_500_000_000,
   addedBy: 'host',
 });
-assert(mb.converting === true, 'MovieBox session starts converting');
-assert(mb.webPlayable === false, 'MovieBox not webPlayable yet');
-assert(mb.suspectConvert === true, 'suspectConvert set');
+assert(mb.converting === false, 'MovieBox session must NOT start held/converting');
+assert(mb.webPlayable === true, 'MovieBox must be webPlayable for immediate play');
+assert(mb.suspectConvert === true, 'suspectConvert set for background convert');
 assert(mb.codecTip, 'codec tip present');
 
 const yt = temp.create({
@@ -152,4 +154,4 @@ temp.scrub(mb.id);
 temp.scrub(yt.id);
 temp.scrub(chunked.id);
 fs.rmSync(work, { recursive: true, force: true });
-console.log('\nALL PASSED — MovieBox/large-file black-screen fixes look good.');
+console.log('\nALL PASSED — play-immediately + background convert look good.');
