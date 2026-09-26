@@ -294,12 +294,21 @@ host.post('/api/host/session', express.json(), async (req, res) => {
   const client = getDiscordClient();
   if (!client) return res.status(503).json({ error: 'Bot is offline — try again in a moment.' });
 
-  const session = temp.create({ channelId: s.voiceChannelId, name: req.body?.name, size: req.body?.size, addedBy: s.userId });
+  const session = temp.create({
+    channelId: s.voiceChannelId,
+    name: req.body?.name,
+    size: req.body?.size,
+    addedBy: s.userId,
+    guildId: s.guildId,
+    title: req.body?.title ? String(req.body.title).slice(0, 160) : undefined,
+    description: req.body?.description ? String(req.body.description).slice(0, 800) : undefined,
+    category: req.body?.category || 'Now Playing',
+  });
   try {
     const playback = {
       ...temp.getPlayback(session),
-      webPlayable: session.webPlayable !== false,
-      converting: Boolean(session.converting),
+      webPlayable: true,
+      converting: false, // play immediately; background convert may flip this later
       codecTip: session.codecTip || null,
       posterUrl: req.body?.posterUrl ? String(req.body.posterUrl).slice(0, 800) : null,
       description: req.body?.description ? String(req.body.description).slice(0, 800) : null,
@@ -314,6 +323,12 @@ host.post('/api/host/session', express.json(), async (req, res) => {
       thumbnail: playback.posterUrl || '',
     };
     sessions.startClanMovie(s.voiceChannelId, { hostId: s.userId, guildId: s.guildId, video, playback });
+    // Start the shared clock immediately so late joiners land at the live spot.
+    try {
+      sessions.control(s.voiceChannelId, s.userId, 'play');
+    } catch {
+      /* ignore */
+    }
     const voice = await client.channels.fetch(s.voiceChannelId).catch(() => null);
     const text = s.textChannelId ? await client.channels.fetch(s.textChannelId).catch(() => null) : null;
     const activityUrl = voice ? await createActivityInvite(voice) : null;
@@ -323,11 +338,12 @@ host.post('/api/host/session', express.json(), async (req, res) => {
       sessionId: session.id,
       name: video.name,
       activityUrl,
-      webPlayable: session.webPlayable !== false,
-      converting: Boolean(session.converting),
+      webPlayable: true,
+      converting: false,
       codecTip: session.codecTip || null,
       suspectConvert: Boolean(session.suspectConvert),
       size: session.total,
+      playNow: true,
     });
   } catch (err) {
     temp.scrub(session.id);
@@ -564,7 +580,7 @@ const CHUNK=8*1024*1024;
 if(S){ // session mode: opened from /watch — no key, auto-start the party
   $('#keywrap').style.display='none';
   $('#listwrap').style.display='none';
-  $('#mode').innerHTML='Pick a movie from this device — the party <b>starts right away</b> and it streams while it uploads. Your file stays on your device; the server copy is temporary and deleted when the party ends. <b>Keep this tab open</b> while watching.<br><br><b>Must be Discord-safe:</b> MP4 with <b>H.264 + AAC</b> (or WebM). Even width/height (1920×1080). <b>.mp4 alone is not enough</b> — MovieBox/HEVC/H.265 used to play black — the server now auto-builds a Discord HLS stream after upload so playback can start before the whole movie finishes converting. HandBrake “Fast 1080p30” is still the fastest path.';
+  $('#mode').innerHTML='Pick a movie from this device — the party <b>starts right away</b> and it <b>plays while it uploads</b> (long movies included — no hold). A Discord-safe stream may build in the background without pausing. Your file stays on your device; the server also stores a vault copy when upload finishes. <b>Keep this tab open</b> while it streams.<br><br><b>Best format:</b> MP4 with <b>H.264 + AAC</b> (or WebM). Even width/height (1920×1080).';
 } else {
   keyEl.value=localStorage.getItem('dnkey')||'';
   keyEl.onchange=()=>{localStorage.setItem('dnkey',keyEl.value);refresh();};
@@ -675,7 +691,7 @@ async function hostSession(f){
   hostMsg='🎉 <b>Party started</b> — “'+(title||meta.name)+'”! Prefer launching from Discord: voice channel → <b>Activities</b> → DarkNight (same window). <b>Keep this tab open</b> while it streams.';
   if(meta.activityUrl) hostMsg+='<br><a class="open" href="'+meta.activityUrl+'" target="_blank" rel="noopener">▶ Open Theater invite</a> <small>(invite links may open another Discord window — that’s Discord, not a bug)</small>';
   if(meta.converting || meta.suspectConvert){
-    hostMsg+='<br><small>🛡️ MovieBox/large file detected — Discord playback is <b>held</b> until a safe HLS stream is ready (avoids the black screen). Upload finishes first, then the first segments unlock the Theater.</small>';
+    hostMsg+='<br><small>▶️ Playing now while it uploads. A smoother Discord stream may build in the background — no hold, no waiting for convert.</small>';
     if(meta.codecTip) hostMsg+='<br><small>'+esc(meta.codecTip)+'</small>';
   } else if(meta.webPlayable===false){
     hostMsg+='<br><small>⚠️ This container may not play in browsers — use MP4 H.264/AAC.</small>';
@@ -715,7 +731,7 @@ async function pollProbe(n){
     const r=await fetch('/api/host/session/'+SID+'/probe?s='+encodeURIComponent(S)).then(x=>x.json());
     if(!r.exists){ setStatus('The party has ended.'); return; }
     if(r.converting && !r.webReady){
-      setStatus(hostMsg+'<br><small>⚙️ Building Discord HLS stream… first segments unlock the Theater soon (full-movie encode continues in background). Keep this tab open.</small>');
+      setStatus(hostMsg+'<br><small>▶️ Playing the live upload — background Discord stream still building (will swap in without skipping when ready).</small>');
       setTimeout(()=>pollProbe(n+1),2500);
       return;
     }
@@ -723,7 +739,7 @@ async function pollProbe(n){
       let msg=hostMsg+'<br><small>✅ '+(r.streamKind==='hls'?'Discord stream ready (HLS)':'Ready')+''+(r.probe?(' · '+esc(r.probe.videoCodec||'?')+' / '+esc(r.probe.audioCodec||'?')+' · '+(r.probe.width||'?')+'×'+(r.probe.height||'?')):'')+'</small>';
       if(r.codecTip) msg+='<br><small style="color:#ffb0b0">⚠️ '+esc(r.codecTip)+'</small>';
       else if(r.webPlayable===false) msg+='<br><small style="color:#ffb0b0">⚠️ This file likely won’t paint in Discord — re-encode to H.264 + AAC.</small>';
-      else msg+='<br><small>Open the Theater and press ▶ if it isn’t already playing.</small>';
+      else msg+='<br><small>Open the Theater — it should already be playing. Late joiners sync to the live position.</small>';
       setStatus(msg);
       return;
     }

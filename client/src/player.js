@@ -92,31 +92,25 @@ export class TheaterPlayer {
       (this.hls || this.video.src || this._awaitingConversion);
     if (same) return;
 
+    // Preserve playhead across progressive→HLS (or revision) swaps so long
+    // movies don't skip / restart when the background convert lands.
+    const priorTime = this.video?.currentTime || 0;
+    const keepTime = this.currentUid === uid && priorTime > 0.5;
+
     this.currentUid = uid;
     this.mediaRevision = rev;
     this._started = false;
-    this._pendingSeek = null;
+    this._pendingSeek = keepTime ? priorTime : null;
     this._userUnmuted = false;
     this._converting = Boolean(converting);
     this._clearPaintWatch();
 
-    // While the server re-encodes HEVC/AC-3, do not attach the incompatible
-    // original — that causes MEDIA_ERR_SRC_NOT_SUPPORTED and a sticky fatal UI.
-    if (converting && kind === 'file' && !hls && !dash) {
-      this._awaitingConversion = true;
-      this._hardResetMedia();
-      this.onLocalControl({
-        type: 'converting',
-        detail: 'Building Discord stream… first minutes unlock shortly',
-      });
-      return;
-    }
-
+    // Play immediately — never hold the <video> empty while converting.
+    // Background HLS/remux may still be running; progressive /tmedia works now.
     this._awaitingConversion = false;
-    // Always hard-reset when leaving conversion or recovering from MEDIA_ERR so
-    // Chromium re-fetches /tmedia/:id (same URL, new H.264 bytes).
+
     const needsHardReset =
-      leavingConversion || this._hadMediaError || Boolean(this.video.error);
+      leavingConversion || this._hadMediaError || Boolean(this.video.error) || keepTime;
     if (needsHardReset) {
       this._hardResetMedia();
     } else {
@@ -127,6 +121,7 @@ export class TheaterPlayer {
     if (kind === 'file' && src) {
       this.video.src = withRevision(src, this.mediaRevision);
       this.video.load?.();
+      if (keepTime) this._pendingSeek = priorTime;
       return;
     }
     // HLS (either a local .m3u8 or a remote manifest).
@@ -148,20 +143,36 @@ export class TheaterPlayer {
       });
       h.loadSource(withRevision(manifest, this.mediaRevision));
       h.attachMedia(this.video);
+      h.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (this._pendingSeek != null) {
+          try {
+            this.video.currentTime = this._pendingSeek;
+          } catch {
+            /* ignore */
+          }
+        }
+      });
       h.on(Hls.Events.ERROR, (_e, data) => {
         if (data?.fatal) {
           this._hadMediaError = true;
           this.onLocalControl({
             type: 'decode-fail',
-            detail: 'Stream error — wait for the host convert to finish, or re-host as H.264 + AAC.',
+            detail: 'Stream error — wait a moment and tap ▶, or re-host as H.264 + AAC.',
           });
         }
       });
       this.hls = h;
+      if (keepTime) this._pendingSeek = priorTime;
     } else if (this.video.canPlayType('application/vnd.apple.mpegurl') && manifest) {
       this.video.src = withRevision(manifest, this.mediaRevision); // Safari / iOS native HLS
+      if (keepTime) this._pendingSeek = priorTime;
     } else if (dash) {
       this.video.src = withRevision(dash, this.mediaRevision);
+    } else if (src) {
+      // Fallback: always try progressive if nothing else attached
+      this.video.src = withRevision(src, this.mediaRevision);
+      this.video.load?.();
+      if (keepTime) this._pendingSeek = priorTime;
     }
   }
 
@@ -213,7 +224,8 @@ export class TheaterPlayer {
   _checkPaint() {
     this._paintTimer = null;
     if (!this.currentUid || this.video.paused) return;
-    if (this._converting || this._awaitingConversion) return;
+    // Still check paint while a background convert runs — progressive may be
+    // black (HEVC); surface a tip without tearing down playback.
 
     const v = this.video;
     if (v.error) {
@@ -268,11 +280,11 @@ export class TheaterPlayer {
 
   _onMediaError() {
     this._hadMediaError = true;
-    // Soft-fail while the server is still converting — not a permanent codec error.
+    // Soft-fail while the server is still converting — keep trying progressive.
     if (this._converting || this._awaitingConversion) {
       this.onLocalControl({
         type: 'converting',
-        detail: 'Building Discord stream… first minutes unlock shortly',
+        detail: 'Still playing the live upload — smoother stream building in the background…',
       });
       return;
     }
@@ -489,15 +501,15 @@ export class TheaterPlayer {
 
     this._converting = Boolean(playback.converting);
 
-    // Show converting tip early (before media is ready).
-    if (playback.converting) {
+    // Soft tip only — never block attaching the progressive / HLS URL.
+    if (playback.converting && !playback.hls) {
       this.onLocalControl({
         type: 'converting',
-        detail: playback.codecTip || 'Converting video for Discord…',
+        detail: playback.codecTip || 'Playing now — optimizing stream in the background…',
       });
     }
 
-    if (playback.src || playback.hls || playback.dash || playback.converting) {
+    if (playback.src || playback.hls || playback.dash) {
       this.load({
         uid: playback.videoUid,
         hls: playback.hls,
@@ -509,10 +521,7 @@ export class TheaterPlayer {
       });
     }
 
-    // While awaiting conversion there is no media clock yet — skip seek/play.
-    if (this._awaitingConversion) {
-      return;
-    }
+    // Never idle the clock waiting on convert — joiners follow the live anchor.
 
     // Prefer the true anchor with server-clock skew correction when available.
     // CRITICAL: main.js re-applies sync.snapshot every 4s. That snapshot's
