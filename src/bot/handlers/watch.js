@@ -7,7 +7,6 @@ import {
 } from 'discord.js';
 import * as library from '../../services/library-store.js';
 import * as sessions from '../../services/sessions.js';
-import { getPlayback } from '../../media/store.js';
 import { signHostSession } from '../../media/token.js';
 import { config } from '../../config.js';
 import { getSettings } from '../../services/settings-store.js';
@@ -171,7 +170,7 @@ export async function handleWatchParty(interaction, uid) {
   if (!video) return interaction.reply({ content: 'That video is unavailable.', ephemeral: true });
 
   await interaction.deferReply({ ephemeral: true });
-  const playback = getPlayback(video);
+  const playback = library.getPlaybackFor(video);
   sessions.startClanMovie(voice.id, {
     hostId: member.id,
     guildId: interaction.guildId,

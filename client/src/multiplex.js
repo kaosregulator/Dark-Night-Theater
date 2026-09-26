@@ -8,13 +8,16 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 const MODEL_URL = '/models/cinema-multiplex.glb';
 const SPEED = 3.4;
 const EYE_FP = 1.48;
-const EYE_SIT = 1.12;
+// Seated POV sits high enough that the row in front no longer fills the frame.
+const EYE_SIT = 1.72;
 const REF_DIST = 3;
 const MAX_AUDIBLE = 34;
 const VOL_SMOOTH = 5;
 const RADIUS = 0.24; // slim enough to walk row aisles between seats
-const TP_BACK = 2.8;
-const TP_HEIGHT = 1.45;
+const TP_BACK = 2.55;
+const TP_HEIGHT = 1.55;
+/** Default spawn near the concession stand (foyer), not mid-auditorium. */
+const SPAWN_CONCESSION = { x: 1.15, y: 0, z: -2.35 };
 
 /** Shared Web Audio graph — createMediaElementSource once per <video>. */
 let sharedAudio = null;
@@ -254,7 +257,7 @@ export async function openMultiplex(
 
   // ---- Player root (feet) + mini character + camera pivot ----
   const playerRoot = new THREE.Group();
-  playerRoot.position.set(-9.2, 0, 0);
+  playerRoot.position.set(SPAWN_CONCESSION.x, SPAWN_CONCESSION.y, SPAWN_CONCESSION.z);
   scene.add(playerRoot);
 
   const character = createMiniPatron(0xc9a227);
@@ -270,6 +273,7 @@ export async function openMultiplex(
   let looking = false; // pointer-lock optional
   let dragging = false; // click-drag look without lock
   let sitting = false;
+  let sittingEyeY = EYE_SIT;
   let pitch = 0;
   let walkPhase = 0;
   let savedThirdPerson = true;
@@ -281,17 +285,18 @@ export async function openMultiplex(
 
   function applyCameraMode() {
     if (sitting) {
-      // Seat POV — first-person eye line toward the screen
+      // Seat POV — raised first-person eye line so front rows don't block the screen
       character.visible = false;
-      camera.position.set(0, EYE_SIT, 0.05);
+      camera.position.set(0, sittingEyeY, 0.12);
       camera.rotation.set(0, 0, 0);
-      pitch = THREE.MathUtils.clamp(pitch, -0.45, 0.35);
+      pitch = THREE.MathUtils.clamp(pitch, -0.35, 0.45);
       pitchObj.rotation.x = pitch;
       setViewLabel('👁', 'Seat', 'Seated POV');
       return;
     }
     if (thirdPerson) {
       character.visible = true;
+      // Camera rides behind the patron; character yaw drives facing
       camera.position.set(0, TP_HEIGHT, TP_BACK);
       camera.rotation.set(0, 0, 0);
       pitch = THREE.MathUtils.clamp(pitch, -0.55, 0.35);
@@ -307,7 +312,8 @@ export async function openMultiplex(
     }
   }
   applyCameraMode();
-  yaw.rotation.y = Math.PI / 2; // face screen (−X)
+  // Face the auditorium / screen (−X) from the concession foyer
+  yaw.rotation.y = Math.PI / 2;
 
   const keys = Object.create(null);
   const touchMove = { x: 0, y: 0 };
@@ -395,8 +401,8 @@ export async function openMultiplex(
     if (!active || isTouch) return;
     const sens = looking ? 0.0022 : 0.003;
     yaw.rotation.y -= e.movementX * sens;
-    const pMax = sitting ? 0.35 : thirdPerson ? 0.35 : 1.15;
-    const pMin = sitting ? -0.45 : thirdPerson ? -0.55 : -1.15;
+    const pMax = sitting ? 0.45 : thirdPerson ? 0.35 : 1.15;
+    const pMin = sitting ? -0.35 : thirdPerson ? -0.55 : -1.15;
     pitch = THREE.MathUtils.clamp(pitch - e.movementY * (sens * 0.85), pMin, pMax);
     pitchObj.rotation.x = pitch;
   };
@@ -526,6 +532,7 @@ export async function openMultiplex(
   const posterSlots = [];
   let seatAnchors = buildSeatAnchors();
   const liveSeats = []; // { id, x, y, z, sitY } from GLB
+  let concessionSpawn = { ...SPAWN_CONCESSION };
 
   try {
     const loader = new GLTFLoader();
@@ -576,6 +583,16 @@ export async function openMultiplex(
             max: [b.max.x + 0.05, b.max.z + 0.05],
           });
         }
+        // Prefer the concessions counter as the walk-in spawn
+        if (n.includes('concessions-counter') && size.x * size.z > 1.2) {
+          const c = b.getCenter(new THREE.Vector3());
+          // Stand on the foyer side of the counter (toward +Z / open floor)
+          concessionSpawn = {
+            x: THREE.MathUtils.clamp(c.x + 0.15, -2.5, 3.2),
+            y: 0,
+            z: Math.min(b.max.z + 0.85, 3.4),
+          };
+        }
       }
       // Real seat meshes → grounded colliders + sit anchors
       if (/\/seat-\d+$/.test(n) || /seat-\d+$/.test(n)) {
@@ -604,8 +621,11 @@ export async function openMultiplex(
         const b = new THREE.Box3().setFromObject(obj);
         const c = b.getCenter(new THREE.Vector3());
         const key = Math.round(c.x * 2) / 2;
-        const y = b.min.y;
-        if (!rowHeights.has(key) || y < rowHeights.get(key)) rowHeights.set(key, y);
+        // Prefer top of steps for walk height (not underside)
+        const y = n.includes('aisle-step') ? b.max.y : b.min.y;
+        if (!rowHeights.has(key) || (n.includes('aisle-step') ? y > rowHeights.get(key) : y < rowHeights.get(key))) {
+          rowHeights.set(key, y);
+        }
       }
     });
     scene.add(root);
@@ -702,8 +722,12 @@ export async function openMultiplex(
       }
     }
 
-    // Spawn mid-auditorium on the measured floor (center aisle)
-    playerRoot.position.set(-9.2, floorY(-9.2), -0.95);
+    // Spawn at the concession stand (foyer) facing the auditorium / screen
+    playerRoot.position.set(concessionSpawn.x, floorY(concessionSpawn.x), concessionSpawn.z);
+    collide(playerRoot.position);
+    playerRoot.position.y = floorY(playerRoot.position.x);
+    yaw.rotation.y = Math.PI / 2; // look toward screen (−X)
+    character.rotation.y = yaw.rotation.y;
     applyPosters(posterSlots, posterUrl);
   } catch (err) {
     console.warn('multiplex load failed', err);
@@ -732,12 +756,33 @@ export async function openMultiplex(
   }
 
   let videoBound = false;
+  let videoBindTries = 0;
   function bindVideo() {
-    if (!videoEl || !screenMesh || videoBound) return videoBound;
+    if (!videoEl || !screenMesh) return videoBound;
+    if (videoBound && videoTex) {
+      videoTex.needsUpdate = true;
+      return true;
+    }
     try {
+      // Keep retrying — Discord often starts the Activity before the first decoded frame
       if (!videoEl.videoWidth) {
-        videoEl.addEventListener('loadeddata', () => bindVideo(), { once: true });
+        if (videoBindTries < 120) {
+          videoBindTries += 1;
+          videoEl.addEventListener('loadeddata', () => bindVideo(), { once: true });
+          videoEl.addEventListener('playing', () => bindVideo(), { once: true });
+          videoEl.addEventListener('resize', () => bindVideo(), { once: true });
+          setTimeout(() => bindVideo(), 500);
+        }
+        // Soft placeholder so the house isn't a dead black slab while buffering
+        if (screenMat && !screenMat.map) {
+          screenMat.color.set(0x1a1520);
+          screenMat.needsUpdate = true;
+        }
         return false;
+      }
+      if (videoTex) {
+        videoTex.dispose();
+        videoTex = null;
       }
       videoTex = new THREE.VideoTexture(videoEl);
       videoTex.colorSpace = THREE.SRGBColorSpace;
@@ -746,6 +791,7 @@ export async function openMultiplex(
       videoTex.generateMipmaps = false;
       fitVideoToScreen(videoEl, screenMat, videoTex, screenMesh);
       videoBound = true;
+      videoBindTries = 0;
       return true;
     } catch (err) {
       console.warn('VideoTexture failed — keeping 2D player', err);
@@ -753,6 +799,14 @@ export async function openMultiplex(
     }
   }
   bindVideo();
+  if (videoEl) {
+    ['loadeddata', 'playing', 'seeked', 'timeupdate'].forEach((evt) => {
+      videoEl.addEventListener(evt, () => {
+        if (!videoBound) bindVideo();
+        else if (videoTex) videoTex.needsUpdate = true;
+      });
+    });
+  }
 
   // ---- Spatial audio (HRTF + cone + lobby muffling — better fit than SoundHub for one live movie) ----
   let userVol = 1;
@@ -864,13 +918,15 @@ export async function openMultiplex(
     savedThirdPerson = thirdPerson;
     sitting = true;
     const ground = seat.y != null ? seat.y : floorY(seat.x);
-    // Feet on tier; camera uses EYE_SIT for true seat POV
+    // Feet on tier; eye line uses cushion top + raised offset so front seats clear
     playerRoot.position.set(seat.x, ground, seat.z);
+    const cushion = seat.sitY != null ? seat.sitY : ground + 0.55;
+    sittingEyeY = Math.max(EYE_SIT, cushion - ground + 0.95);
     yaw.rotation.y = Math.PI / 2; // face screen
-    pitch = -0.05;
+    pitch = 0.08; // slight upward tilt over the row ahead
     pitchObj.rotation.x = pitch;
     character.position.set(0, 0, 0);
-    character.rotation.set(0, 0, 0);
+    character.rotation.set(0, yaw.rotation.y, 0);
     applyCameraMode(); // forces seated FP POV
     hostEl.querySelector('#mx-seatmap').classList.add('hidden');
     unlockAudio();
@@ -990,8 +1046,8 @@ export async function openMultiplex(
     last = now;
 
     // Pitch limits for look (mouse / arrows / touch)
-    const pMax = sitting ? 0.35 : thirdPerson ? 0.35 : 1.15;
-    const pMin = sitting ? -0.45 : thirdPerson ? -0.55 : -1.15;
+    const pMax = sitting ? 0.45 : thirdPerson ? 0.35 : 1.15;
+    const pMin = sitting ? -0.35 : thirdPerson ? -0.55 : -1.15;
 
     // Touch look deltas
     if (isTouch && (lookDelta.x || lookDelta.y)) {
@@ -1073,13 +1129,23 @@ export async function openMultiplex(
       });
     }
 
-    // Smooth tier steps — stay grounded, no float/pop
+    // Turn the mini patron with look yaw so left/right feels like a real person;
+    // third-person camera (child of yaw) follows behind automatically.
     if (!sitting) {
-      const targetY = floorY(playerRoot.position.x);
-      playerRoot.position.y += (targetY - playerRoot.position.y) * Math.min(1, 14 * dt);
+      character.rotation.y = yaw.rotation.y;
     }
 
-    if (videoTex && videoEl && !videoEl.paused) videoTex.needsUpdate = true;
+    // Firmer step snap on aisle tiers — less float, clearer stair contact
+    if (!sitting) {
+      const targetY = floorY(playerRoot.position.x);
+      const dy = targetY - playerRoot.position.y;
+      const stepRate = Math.abs(dy) > 0.12 ? 22 : 14;
+      playerRoot.position.y += dy * Math.min(1, stepRate * dt);
+    }
+
+    // Keep the cinema screen painting even while paused / buffering
+    if (videoTex) videoTex.needsUpdate = true;
+    else if (!videoBound) bindVideo();
     updateSpatial(dt);
 
     const showNear = nearScreen() && !sitting;
@@ -1137,9 +1203,15 @@ export async function openMultiplex(
     },
     refreshVideo() {
       videoBound = false;
+      videoBindTries = 0;
       if (videoTex) {
         videoTex.dispose();
         videoTex = null;
+      }
+      if (screenMat) {
+        screenMat.map = null;
+        screenMat.color.set(0x1a1520);
+        screenMat.needsUpdate = true;
       }
       bindVideo();
     },

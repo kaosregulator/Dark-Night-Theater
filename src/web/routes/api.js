@@ -4,7 +4,6 @@ import { requireUser, exchangeCode } from '../../util/auth.js';
 import * as library from '../../services/library-store.js';
 import * as sessions from '../../services/sessions.js';
 import { getSettings } from '../../services/settings-store.js';
-import { getPlayback } from '../../media/store.js';
 import { log } from '../../logger.js';
 
 export const api = express.Router();
@@ -57,7 +56,7 @@ api.post('/playback', (req, res) => {
   const { uid } = req.body || {};
   const video = library.findVideo(uid);
   if (!video) return res.status(404).json({ error: 'Video not found' });
-  const urls = getPlayback(video);
+  const urls = library.getPlaybackFor(video);
   res.json({ uid: video.uid, name: video.name, durationSeconds: video.durationSeconds, ...urls });
 });
 
@@ -86,7 +85,7 @@ api.post('/session/:channelId/movie', (req, res) => {
   const { uid, guildId } = req.body || {};
   const video = library.findVideo(uid);
   if (!video) return res.status(404).json({ error: 'Video not found' });
-  const playback = getPlayback(video);
+  const playback = library.getPlaybackFor(video);
   sessions.startClanMovie(req.params.channelId, { hostId: req.user.id, guildId, video, playback });
   res.json(sessions.snapshot(sessions.getRoom(req.params.channelId)));
 });
@@ -117,7 +116,7 @@ api.post('/session/:channelId/marquee/:uid/vote', (req, res) => {
 api.post('/session/:channelId/marquee/:uid/start', (req, res) => {
   const video = library.findVideo(req.params.uid);
   if (!video) return res.status(404).json({ error: 'Video not found' });
-  const playback = getPlayback(video);
+  const playback = library.getPlaybackFor(video);
   sessions.startClanMovie(req.params.channelId, {
     hostId: req.user.id,
     guildId: req.body?.guildId,
@@ -132,7 +131,7 @@ api.post('/session/:channelId/booth', (req, res) => {
   const { uid, guildId, label } = req.body || {};
   const video = library.findVideo(uid);
   if (!video) return res.status(404).json({ error: 'Video not found' });
-  const playback = getPlayback(video);
+  const playback = library.getPlaybackFor(video);
   const result = sessions.openBooth(req.params.channelId, {
     hostId: req.user.id,
     guildId,

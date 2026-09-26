@@ -138,9 +138,15 @@ body {
 }
 .react-drawer[hidden] { display: none !important; }
 .react-drawer-head {
-  text-align: center; font-size: .65rem; color: var(--gold-2); letter-spacing: .08em;
+  display: flex; align-items: center; justify-content: space-between; gap: .25rem;
+  font-size: .65rem; color: var(--gold-2); letter-spacing: .08em;
   margin-bottom: .35rem; text-transform: uppercase;
 }
+.react-drawer-close {
+  background: transparent; border: 0; color: var(--muted); cursor: pointer;
+  font-size: .8rem; line-height: 1; padding: .1rem .25rem; border-radius: 6px;
+}
+.react-drawer-close:hover { color: var(--text); background: rgba(255,255,255,.06); }
 .react-drawer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .3rem; }
 
 /* ---- Controls ---- */
