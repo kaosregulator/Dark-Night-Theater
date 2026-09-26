@@ -16,8 +16,8 @@ const VOL_SMOOTH = 5;
 const RADIUS = 0.24; // slim enough to walk row aisles between seats
 const TP_BACK = 2.55;
 const TP_HEIGHT = 1.55;
-/** Default spawn near the concession stand (foyer), not mid-auditorium. */
-const SPAWN_CONCESSION = { x: 1.15, y: 0, z: -2.35 };
+/** Default spawn in the open foyer in front of concessions (not inside the counter). */
+const SPAWN_CONCESSION = { x: 0.4, y: 0, z: 0.55 };
 
 /** Shared Web Audio graph — createMediaElementSource once per <video>. */
 let sharedAudio = null;
@@ -241,17 +241,24 @@ export async function openMultiplex(
 
   const camera = new THREE.PerspectiveCamera(70, hostEl.clientWidth / Math.max(hostEl.clientHeight, 1), 0.08, 80);
 
-  const hemi = new THREE.HemisphereLight(0xffe6c8, 0x1a1018, 0.85);
+  const hemi = new THREE.HemisphereLight(0xffe6c8, 0x1a1018, 1.15);
   scene.add(hemi);
-  const key = new THREE.DirectionalLight(0xfff0d8, 0.9);
-  key.position.set(-2, 8, 2);
+  const key = new THREE.DirectionalLight(0xfff0d8, 1.15);
+  key.position.set(2, 9, 1);
   scene.add(key);
-  const fill = new THREE.PointLight(0xc9a227, 12, 28);
+  const fill = new THREE.PointLight(0xc9a227, 14, 32);
   fill.position.set(-2, 3.2, 0);
   scene.add(fill);
+  // Foyer / concession wash — without this the spawn looks like a black void
+  const foyerLight = new THREE.PointLight(0xffe2b8, 18, 16);
+  foyerLight.position.set(1.2, 3.4, -1.6);
+  scene.add(foyerLight);
+  const foyerFill = new THREE.PointLight(0x88aaff, 8, 14);
+  foyerFill.position.set(2.4, 2.6, 1.2);
+  scene.add(foyerFill);
   let dimmed = false;
 
-  const screenGlow = new THREE.PointLight(0xffffff, 0, 18);
+  const screenGlow = new THREE.PointLight(0xffffff, 0.8, 18);
   screenGlow.position.set(-13.2, 2.1, -1);
   scene.add(screenGlow);
 
@@ -547,6 +554,21 @@ export async function openMultiplex(
       if (!obj.isMesh) return;
       obj.castShadow = false;
       obj.receiveShadow = false;
+      // Keep dark theater mood but avoid unlit black slabs in the foyer
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for (const mat of mats) {
+        if (!mat) continue;
+        if (mat.isMeshStandardMaterial || mat.isMeshPhysicalMaterial) {
+          mat.metalness = Math.min(mat.metalness ?? 0.2, 0.35);
+          mat.roughness = Math.max(mat.roughness ?? 0.6, 0.45);
+          if (mat.color) {
+            const hsl = { h: 0, s: 0, l: 0 };
+            mat.color.getHSL(hsl);
+            if (hsl.l < 0.08) mat.color.setHSL(hsl.h, hsl.s, 0.12);
+          }
+          mat.needsUpdate = true;
+        }
+      }
       const n = (obj.name || '').toLowerCase();
       if (
         /poster-light-box.*(?:stand3|wall2)$/.test(n) ||
@@ -586,12 +608,14 @@ export async function openMultiplex(
         // Prefer the concessions counter as the walk-in spawn
         if (n.includes('concessions-counter') && size.x * size.z > 1.2) {
           const c = b.getCenter(new THREE.Vector3());
-          // Stand on the foyer side of the counter (toward +Z / open floor)
+          // Open foyer in front of the counter — pick the side closer to room center
+          const towardCenter = c.z > 0 ? b.min.z - 1.5 : b.max.z + 1.5;
           concessionSpawn = {
-            x: THREE.MathUtils.clamp(c.x + 0.15, -2.5, 3.2),
+            x: THREE.MathUtils.clamp(c.x * 0.35, -1.5, 2.2),
             y: 0,
-            z: Math.min(b.max.z + 0.85, 3.4),
+            z: THREE.MathUtils.clamp(towardCenter, -4.5, 3.0),
           };
+          foyerLight.position.set(c.x, Math.max(2.8, b.max.y + 0.6), (b.min.z + b.max.z) / 2);
         }
       }
       // Real seat meshes → grounded colliders + sit anchors
@@ -724,7 +748,8 @@ export async function openMultiplex(
 
     // Spawn at the concession stand (foyer) facing the auditorium / screen
     playerRoot.position.set(concessionSpawn.x, floorY(concessionSpawn.x), concessionSpawn.z);
-    collide(playerRoot.position);
+    // Nudge out of any prop collider we might have landed in
+    for (let i = 0; i < 6; i++) collide(playerRoot.position);
     playerRoot.position.y = floorY(playerRoot.position.x);
     yaw.rotation.y = Math.PI / 2; // look toward screen (−X)
     character.rotation.y = yaw.rotation.y;
@@ -977,9 +1002,11 @@ export async function openMultiplex(
   dimBtn.onclick = (e) => {
     e.stopPropagation();
     dimmed = !dimmed;
-    hemi.intensity = dimmed ? 0.25 : 0.85;
-    key.intensity = dimmed ? 0.2 : 0.9;
-    fill.intensity = dimmed ? 3 : 12;
+    hemi.intensity = dimmed ? 0.28 : 1.15;
+    key.intensity = dimmed ? 0.2 : 1.15;
+    fill.intensity = dimmed ? 3 : 14;
+    foyerLight.intensity = dimmed ? 2 : 18;
+    foyerFill.intensity = dimmed ? 1 : 8;
     scene.background = new THREE.Color(dimmed ? 0x050308 : 0x0a0810);
     dimBtn.classList.toggle('active', dimmed);
     dimBtn.innerHTML = dimmed ? '<span>🌙</span><em>Dim</em>' : '<span>💡</span><em>Lights</em>';
